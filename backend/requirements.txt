@@ -1,0 +1,36 @@
+# Django Core
+Django>=4.2,<5.0
+djangorestframework>=3.14
+django-cors-headers>=4.3
+django-filter>=23.5
+
+# Database
+mysqlclient>=2.2
+PyMySQL>=1.1       # fallback if mysqlclient fails on Windows
+
+# Auth
+djangorestframework-simplejwt>=5.3
+
+# Environment
+python-dotenv>=1.0
+
+# HTTP Client (for Recall.ai API)
+requests>=2.31
+
+# Async / Real-Time
+celery>=5.3
+redis>=5.0
+channels>=4.0
+channels-redis>=4.1
+
+# LLM Pipeline
+langchain>=0.1
+langchain-openai>=0.1
+langchain-core>=0.1
+openai>=1.0
+
+# Pydantic (structured LLM output)
+pydantic>=2.0
+
+# Whisper (uses OpenAI API, no local install needed)
+# openai-whisper  # Only needed if you want local Whisper — requires ffmpeg
