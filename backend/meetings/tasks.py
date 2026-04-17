@@ -18,6 +18,8 @@ import tempfile
 from celery import shared_task
 from django.conf import settings
 
+from meetings.broadcast import broadcast_to_meeting
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +49,7 @@ def process_meeting_pipeline(self, meeting_id: int):
     # Mark as processing
     meeting.status = Meeting.Status.PROCESSING
     meeting.save(update_fields=["status"])
+    broadcast_to_meeting(meeting_id, "status_change", {"status": "processing"})
 
     try:
         # ─── Step 1: Get transcript from Recall.ai ───
@@ -89,14 +92,24 @@ def process_meeting_pipeline(self, meeting_id: int):
                 },
             )
 
+            # Broadcast chunk to WS clients
+            broadcast_to_meeting(meeting_id, "transcript_chunk", {
+                "chunk_index": chunk_data["chunk_index"],
+                "summary": processed.get("summary", ""),
+            })
+
             # Extract and save action items from this chunk
             for item in processed.get("action_items", []):
-                ActionItem.objects.create(
+                ai = ActionItem.objects.create(
                     meeting=meeting,
                     assigned_speaker=item.get("assigned_to", "Unassigned"),
                     task_description=item.get("task", ""),
                     deadline=item.get("deadline"),
                 )
+                broadcast_to_meeting(meeting_id, "action_item", {
+                    "id": ai.id, "assigned_speaker": ai.assigned_speaker,
+                    "task_description": ai.task_description, "deadline": ai.deadline,
+                })
 
         logger.info("Step 3 complete: all chunks processed, %d action items saved",
                      meeting.action_items.count())
@@ -129,6 +142,8 @@ def process_meeting_pipeline(self, meeting_id: int):
         meeting.final_summary = "\n\n".join(summary_parts)
         meeting.status = Meeting.Status.COMPLETED
         meeting.save(update_fields=["title", "final_summary", "status"])
+        broadcast_to_meeting(meeting_id, "summary_update", {"summary": meeting.final_summary})
+        broadcast_to_meeting(meeting_id, "status_change", {"status": "completed"})
 
         logger.info("═══ Pipeline complete for Meeting %d ═══", meeting_id)
         return {

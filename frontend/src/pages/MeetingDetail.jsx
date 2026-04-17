@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getMeeting, startBot, reprocessMeeting, deleteMeeting } from '../api/client';
 import ActionItemList from '../components/ActionItemList';
+import useWebSocket from '../hooks/useWebSocket';
 
 const statusLabels = {
   pending: 'Pending',
@@ -42,13 +43,18 @@ export default function MeetingDetail() {
 
   useEffect(() => {
     fetchMeeting();
-    // Auto-refresh for active meetings
-    const isActive = meeting?.status && ['bot_joining', 'in_progress', 'processing'].includes(meeting.status);
-    if (isActive) {
-      const interval = setInterval(fetchMeeting, 10000);
-      return () => clearInterval(interval);
+  }, [id]);
+
+  // WebSocket for live updates
+  const handleWsMessage = useCallback((msg) => {
+    if (msg.type === 'status_change') {
+      setMeeting((prev) => prev ? { ...prev, status: msg.data.status } : prev);
+      if (msg.data.status === 'completed') fetchMeeting();
+    } else if (msg.type === 'summary_update' || msg.type === 'transcript_chunk' || msg.type === 'action_item') {
+      fetchMeeting();
     }
-  }, [id, meeting?.status]);
+  }, [id]);
+  const { connected: wsConnected } = useWebSocket(id, handleWsMessage);
 
   const handleStartBot = async () => {
     setActionLoading('start-bot');
@@ -182,7 +188,10 @@ export default function MeetingDetail() {
             {meeting.status === 'in_progress' && 'Recording in progress...'}
             {meeting.status === 'processing' && 'Processing transcript with AI...'}
           </span>
-          <span className="text-[var(--color-surface-500)] text-xs ml-auto">Auto-refreshing...</span>
+          <span className="text-[var(--color-surface-500)] text-xs ml-auto flex items-center gap-1.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-danger)]'}`} />
+            {wsConnected ? 'Live' : 'Reconnecting...'}
+          </span>
         </div>
       )}
 

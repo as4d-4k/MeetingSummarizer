@@ -22,6 +22,7 @@ ALLOWED_HOSTS = ["*"]
 # INSTALLED APPS
 # ──────────────────────────────────────────────
 INSTALLED_APPS = [
+    "daphne",
     # Django core
     "django.contrib.admin",
     "django.contrib.auth",
@@ -33,6 +34,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "django_filters",
+    "channels",
     # Local apps
     "accounts",
     "meetings",
@@ -208,6 +210,19 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
+
+
+# ──────────────────────────────────────────────
+# DJANGO CHANNELS
+# ──────────────────────────────────────────────
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
+    },
+}
 
 
 # ──────────────────────────────────────────────
