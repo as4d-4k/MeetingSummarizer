@@ -1,3 +1,39 @@
-.env
-.env.example
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
 
+# Virtual environments
+backend/venv/
+venv/
+
+# Environment files
+.env
+*.env
+
+# Database
+*.sqlite3
+db.sqlite3
+
+# Media uploads
+backend/media/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Logs
+*.log
