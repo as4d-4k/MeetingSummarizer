@@ -229,6 +229,7 @@ CHANNEL_LAYERS = {
 # API KEYS (prep for Layers 3-4)
 # ──────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 RECALL_AI_API_KEY = os.getenv("RECALL_AI_API_KEY", "")
 
 

@@ -1,19 +1,20 @@
 """
 LLM service for meeting transcript processing.
 
-Uses LangChain + OpenAI GPT-4o for:
-  - Processing transcript chunks (translate, summarize, extract action items)
-  - Generating a final coherent meeting summary from all chunk summaries
+Supports both Google Gemini and OpenAI GPT-4o via LangChain.
+Auto-selects the provider based on available API keys:
+  - GOOGLE_API_KEY -> Gemini (preferred, free tier available)
+  - OPENAI_API_KEY -> GPT-4o (fallback)
 
 Structured outputs use Pydantic models for reliable JSON extraction.
 """
 
 import json
 import logging
+import time
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from django.conf import settings
@@ -59,20 +60,40 @@ class LLMService:
     """
     LLM-powered meeting transcript processor.
 
-    Uses GPT-4o via LangChain for structured extraction.
+    Auto-selects between Gemini and GPT-4o based on available API keys.
     """
 
-    def __init__(self, model: str = "gpt-4o", temperature: float = 0.1):
-        api_key = settings.OPENAI_API_KEY
-        if not api_key:
-            raise LLMServiceError("OPENAI_API_KEY is not configured.")
+    def __init__(self, temperature: float = 0.1):
+        self.llm = self._init_llm(temperature)
 
-        self.llm = ChatOpenAI(
-            model=model,
-            temperature=temperature,
-            api_key=api_key,
-            max_tokens=4096,
-        )
+    def _init_llm(self, temperature: float):
+        """Initialize the best available LLM provider."""
+
+        # Priority 1: Google Gemini (free tier available)
+        google_key = getattr(settings, 'GOOGLE_API_KEY', '')
+        if google_key:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            logger.info("Using Google Gemini (gemini-2.5-flash)")
+            return ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash",
+                temperature=temperature,
+                google_api_key=google_key,
+                max_output_tokens=4096,
+            )
+
+        # Priority 2: OpenAI GPT-4o
+        openai_key = getattr(settings, 'OPENAI_API_KEY', '')
+        if openai_key:
+            from langchain_openai import ChatOpenAI
+            logger.info("Using OpenAI GPT-4o")
+            return ChatOpenAI(
+                model="gpt-4o",
+                temperature=temperature,
+                api_key=openai_key,
+                max_tokens=4096,
+            )
+
+        raise LLMServiceError("No LLM API key configured. Set GOOGLE_API_KEY or OPENAI_API_KEY.")
 
     # ──────────────────────────────────────────────
     # Process a single transcript chunk
@@ -121,18 +142,24 @@ class LLMService:
 
         logger.info("Processing chunk #%d (%d chars)", chunk_index, len(raw_text))
 
-        try:
-            result = chain.invoke({
-                "transcript": raw_text,
-                "chunk_index": chunk_index,
-                "format_instructions": parser.get_format_instructions(),
-            })
-            logger.info("Chunk #%d processed: %d action items found", chunk_index, len(result.get("action_items", [])))
-            return result
+        for attempt in range(3):
+            try:
+                result = chain.invoke({
+                    "transcript": raw_text,
+                    "chunk_index": chunk_index,
+                    "format_instructions": parser.get_format_instructions(),
+                })
+                logger.info("Chunk #%d processed: %d action items found", chunk_index, len(result.get("action_items", [])))
+                return result
 
-        except Exception as exc:
-            logger.error("LLM chunk processing failed: %s", exc)
-            raise LLMServiceError(f"Failed to process chunk #{chunk_index}: {exc}") from exc
+            except Exception as exc:
+                if "429" in str(exc) and attempt < 2:
+                    wait = 25 * (attempt + 1)
+                    logger.warning("Rate limited on chunk #%d, retrying in %ds...", chunk_index, wait)
+                    time.sleep(wait)
+                    continue
+                logger.error("LLM chunk processing failed: %s", exc)
+                raise LLMServiceError(f"Failed to process chunk #{chunk_index}: {exc}") from exc
 
     # ──────────────────────────────────────────────
     # Generate final meeting summary
@@ -197,18 +224,24 @@ class LLMService:
 
         logger.info("Generating final summary from %d chunks", len(chunk_summaries))
 
-        try:
-            result = chain.invoke({
-                "chunks_context": chunks_context,
-                "format_instructions": parser.get_format_instructions(),
-            })
-            logger.info(
-                "Final summary generated: title='%s', %d action items",
-                result.get("title", ""),
-                len(result.get("overall_action_items", [])),
-            )
-            return result
+        for attempt in range(3):
+            try:
+                result = chain.invoke({
+                    "chunks_context": chunks_context,
+                    "format_instructions": parser.get_format_instructions(),
+                })
+                logger.info(
+                    "Final summary generated: title='%s', %d action items",
+                    result.get("title", ""),
+                    len(result.get("overall_action_items", [])),
+                )
+                return result
 
-        except Exception as exc:
-            logger.error("Final summary generation failed: %s", exc)
-            raise LLMServiceError(f"Failed to generate final summary: {exc}") from exc
+            except Exception as exc:
+                if "429" in str(exc) and attempt < 2:
+                    wait = 25 * (attempt + 1)
+                    logger.warning("Rate limited on final summary, retrying in %ds...", wait)
+                    time.sleep(wait)
+                    continue
+                logger.error("Final summary generation failed: %s", exc)
+                raise LLMServiceError(f"Failed to generate final summary: {exc}") from exc
