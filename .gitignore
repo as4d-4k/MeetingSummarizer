@@ -12,6 +12,7 @@ venv/
 # Environment files
 .env
 *.env
+.env.example
 
 # Database
 *.sqlite3
