@@ -7,8 +7,8 @@ Contains business logic for:
   - LLM-based summarization & action-item extraction (LangChain + GPT-4o)
 """
 
-from .recall_service import RecallService
+from .recall_service import RecallService, RecallServiceError
 from .transcription_service import TranscriptionService
-from .llm_service import LLMService
+from .llm_service import LLMService, LLMServiceError
 
-__all__ = ["RecallService", "TranscriptionService", "LLMService"]
+__all__ = ["RecallService", "RecallServiceError", "TranscriptionService", "LLMService", "LLMServiceError"]

@@ -15,7 +15,7 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-RECALL_API_BASE = "https://us-west-2.recall.ai/api/v1"
+RECALL_API_BASE = "https://ap-northeast-1.recall.ai/api/v1"
 
 
 class RecallServiceError(Exception):
@@ -53,24 +53,21 @@ class RecallService:
         payload = {
             "meeting_url": meeting_url,
             "bot_name": bot_name,
-            "transcription_options": {
-                "provider": "meeting_captions",  # Use meeting's own captions
-            },
-            "real_time_transcription": {
-                "destination_url": "",  # We'll poll instead of streaming
-            },
         }
 
         url = f"{RECALL_API_BASE}/bot/"
         logger.info("Creating Recall.ai bot for %s", meeting_url)
 
         try:
-            response = requests.post(url, json=payload, headers=self.headers, timeout=30)
+            response = requests.post(url, json=payload, headers=self.headers, timeout=60)
             response.raise_for_status()
             data = response.json()
             logger.info("Bot created: id=%s", data.get("id"))
             return data
         except requests.exceptions.RequestException as exc:
+            # Log the response body for debugging
+            if hasattr(exc, 'response') and exc.response is not None:
+                logger.error("Recall API error body: %s", exc.response.text[:500])
             logger.error("Failed to create bot: %s", exc)
             raise RecallServiceError(f"Failed to create bot: {exc}") from exc
 
@@ -114,6 +111,8 @@ class RecallService:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as exc:
+            if hasattr(exc, 'response') and exc.response is not None:
+                logger.error("Transcript API error body: %s", exc.response.text[:500])
             logger.error("Failed to get transcript: %s", exc)
             raise RecallServiceError(f"Failed to get transcript: {exc}") from exc
 
@@ -128,14 +127,35 @@ class RecallService:
             URL string if recording is available, None otherwise.
         """
         bot_data = self.get_bot_status(bot_id)
+
+        # Check recordings array (Recall.ai v1 format)
+        recordings = bot_data.get("recordings", [])
+        if recordings:
+            for rec in recordings:
+                # Path: recordings[].media_shortcuts.video_mixed.data.download_url
+                media_shortcuts = rec.get("media_shortcuts", {})
+                video_mixed = media_shortcuts.get("video_mixed", {})
+                download_url = video_mixed.get("data", {}).get("download_url")
+                if download_url:
+                    logger.info("Recording URL obtained from media_shortcuts for bot %s", bot_id)
+                    return download_url
+
+                # Fallback: check media.video.url
+                media = rec.get("media", {})
+                if isinstance(media, dict):
+                    video_url = media.get("video", {}).get("url")
+                    if video_url:
+                        logger.info("Recording URL obtained from media.video for bot %s", bot_id)
+                        return video_url
+
+        # Fallback: check top-level fields
         recording = bot_data.get("video_url") or bot_data.get("media", {}).get("video_url")
+        if recording:
+            logger.info("Recording URL obtained for bot %s", bot_id)
+            return recording
 
-        if not recording:
-            logger.warning("No recording available yet for bot %s", bot_id)
-            return None
-
-        logger.info("Recording URL obtained for bot %s", bot_id)
-        return recording
+        logger.warning("No recording available yet for bot %s. Bot data keys: %s", bot_id, list(bot_data.keys()))
+        return None
 
     # ──────────────────────────────────────────────
     # Download Recording

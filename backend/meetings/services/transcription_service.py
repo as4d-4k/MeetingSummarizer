@@ -1,15 +1,18 @@
 """
-Audio transcription service using OpenAI Whisper API.
+Audio transcription service.
 
-Handles:
-  - Transcribing audio files (supports Urdu/English code-switching)
+Supports two providers (auto-selects based on available API keys):
+  1. Google Gemini 2.5 Flash (free tier) — preferred
+  2. OpenAI Whisper (paid)
+
+Also handles:
   - Converting Recall.ai transcript segments into a unified text format
+  - Chunking transcripts into processable segments
 """
 
 import logging
 from pathlib import Path
 
-from openai import OpenAI
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -22,7 +25,7 @@ class TranscriptionServiceError(Exception):
 
 class TranscriptionService:
     """
-    Transcription service using OpenAI Whisper API.
+    Transcription service with auto-provider selection.
 
     Supports two modes:
       1. Audio file transcription (for recordings downloaded from Recall.ai)
@@ -30,21 +33,24 @@ class TranscriptionService:
     """
 
     def __init__(self):
-        api_key = settings.OPENAI_API_KEY
-        if not api_key:
-            raise TranscriptionServiceError("OPENAI_API_KEY is not configured.")
-        self.client = OpenAI(api_key=api_key)
+        self.provider = self._detect_provider()
+
+    def _detect_provider(self) -> str:
+        """Detect which transcription provider to use."""
+        if getattr(settings, 'GOOGLE_API_KEY', ''):
+            return 'gemini'
+        if getattr(settings, 'OPENAI_API_KEY', ''):
+            return 'openai'
+        raise TranscriptionServiceError("No API key configured. Set GOOGLE_API_KEY or OPENAI_API_KEY.")
 
     # ──────────────────────────────────────────────
-    # Mode 1: Transcribe audio via Whisper API
+    # Mode 1: Transcribe audio file
     # ──────────────────────────────────────────────
     def transcribe_audio(self, audio_file_path: str) -> str:
         """
-        Transcribe an audio file using OpenAI Whisper API.
+        Transcribe an audio file using the best available provider.
 
-        Optimized for Urdu/English code-switched meetings:
-        - Uses a prompt hint to guide the model toward Urdu+English
-        - Returns the full transcript as a single string
+        Optimized for Urdu/English code-switched meetings.
 
         Args:
             audio_file_path: Path to the audio file (mp3, mp4, wav, webm, etc.)
@@ -56,14 +62,74 @@ class TranscriptionService:
         if not file_path.exists():
             raise TranscriptionServiceError(f"Audio file not found: {audio_file_path}")
 
-        logger.info("Transcribing audio file: %s (%.1f MB)", file_path.name, file_path.stat().st_size / 1e6)
+        logger.info("Transcribing audio file: %s (%.1f MB) using %s",
+                     file_path.name, file_path.stat().st_size / 1e6, self.provider)
 
+        if self.provider == 'gemini':
+            return self._transcribe_with_gemini(file_path)
+        else:
+            return self._transcribe_with_whisper(file_path)
+
+    def _transcribe_with_gemini(self, file_path: Path) -> str:
+        """Transcribe using Google Gemini 2.5 Flash (handles audio natively)."""
+        import time
         try:
+            from google import genai
+
+            client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+
+            # Upload the audio file to Gemini
+            logger.info("Uploading audio to Gemini...")
+            uploaded_file = client.files.upload(file=file_path)
+
+            # Wait for file to be processed
+            while uploaded_file.state == "PROCESSING":
+                time.sleep(2)
+                uploaded_file = client.files.get(name=uploaded_file.name)
+
+            if uploaded_file.state != "ACTIVE":
+                raise TranscriptionServiceError(f"File upload failed: state={uploaded_file.state}")
+
+            logger.info("Audio uploaded, requesting transcription...")
+
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    uploaded_file,
+                    "Transcribe this meeting audio EXACTLY as spoken. "
+                    "The speakers mix Urdu and English (code-switching). "
+                    "Write Urdu words in Roman Urdu (Latin script) and English words normally. "
+                    "Format as a plain transcript with speaker labels if possible "
+                    "(e.g., 'Speaker 1: ...', 'Speaker 2: ...'). "
+                    "Do NOT summarize — provide the full word-for-word transcription."
+                ],
+            )
+
+            transcript = response.text.strip()
+            logger.info("Gemini transcription complete: %d characters", len(transcript))
+
+            # Clean up uploaded file
+            try:
+                client.files.delete(name=uploaded_file.name)
+            except Exception:
+                pass
+
+            return transcript
+
+        except Exception as exc:
+            logger.error("Gemini transcription failed: %s", exc)
+            raise TranscriptionServiceError(f"Gemini transcription failed: {exc}") from exc
+
+    def _transcribe_with_whisper(self, file_path: Path) -> str:
+        """Transcribe using OpenAI Whisper API."""
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
             with open(file_path, "rb") as audio_file:
-                response = self.client.audio.transcriptions.create(
+                response = client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
-                    # Prompt helps Whisper handle code-switching
                     prompt=(
                         "This is a meeting with speakers who mix Urdu and English. "
                         "Transcribe exactly what is said, preserving both Urdu and English words. "
@@ -73,7 +139,7 @@ class TranscriptionService:
                 )
 
             transcript = response.strip() if isinstance(response, str) else response.text.strip()
-            logger.info("Transcription complete: %d characters", len(transcript))
+            logger.info("Whisper transcription complete: %d characters", len(transcript))
             return transcript
 
         except Exception as exc:

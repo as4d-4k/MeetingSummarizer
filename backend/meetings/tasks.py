@@ -258,22 +258,31 @@ def poll_bot_status(meeting_id: int):
             latest_status = status_changes[-1].get("code", "")
             logger.info("Bot %s status: %s", meeting.bot_id, latest_status)
 
+            # Update status to IN_PROGRESS when bot is actually recording
+            if latest_status in ("in_call_recording", "in_call_not_recording", "recording_permission_allowed"):
+                if meeting.status != Meeting.Status.IN_PROGRESS:
+                    meeting.status = Meeting.Status.IN_PROGRESS
+                    meeting.save(update_fields=["status"])
+                    broadcast_to_meeting(meeting_id, "status_change", {"status": "in_progress"})
+                    logger.info("Meeting %d status updated to IN_PROGRESS", meeting_id)
+
             if latest_status == "done":
-                # Bot finished — trigger processing
+                # Bot finished — wait 30s for recording to process, then trigger pipeline
                 meeting.status = Meeting.Status.PROCESSING
                 meeting.save(update_fields=["status"])
-                process_meeting_pipeline.delay(meeting_id)
+                broadcast_to_meeting(meeting_id, "status_change", {"status": "processing"})
+                process_meeting_pipeline.apply_async(args=[meeting_id], countdown=30)
                 return
 
             elif latest_status in ("fatal", "analysis_failed"):
                 meeting.status = Meeting.Status.FAILED
                 meeting.save(update_fields=["status"])
+                broadcast_to_meeting(meeting_id, "status_change", {"status": "failed"})
                 logger.error("Bot %s failed with status: %s", meeting.bot_id, latest_status)
                 return
 
-        # Still in progress — poll again in 30 seconds
-        if meeting.status in (Meeting.Status.BOT_JOINING, Meeting.Status.IN_PROGRESS):
-            poll_bot_status.apply_async(args=[meeting_id], countdown=30)
+        # Still in progress — poll again in 15 seconds
+        poll_bot_status.apply_async(args=[meeting_id], countdown=15)
 
     except Exception as exc:
         logger.error("Error polling bot status for meeting %d: %s", meeting_id, exc)
