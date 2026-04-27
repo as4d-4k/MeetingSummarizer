@@ -171,7 +171,7 @@ def _fetch_transcript(meeting) -> str:
 
     Tries two approaches:
       1. Get the Recall.ai built-in transcript (faster, if available)
-      2. Download recording + transcribe with Whisper (more accurate for Urdu)
+      2. Download recording + transcribe with Gemini/Whisper (more accurate for Urdu)
 
     Falls back to any existing transcript on the meeting record.
     """
@@ -195,29 +195,37 @@ def _fetch_transcript(meeting) -> str:
     except Exception as exc:
         logger.warning("Recall transcript fetch failed: %s — trying recording", exc)
 
-    # Try 2: Download recording and transcribe with Whisper
+    # Try 2: Download recording and transcribe with Gemini
     try:
-        recording_url = recall_svc.get_recording_url(meeting.bot_id)
-        if recording_url:
-            # Download to a temp file
-            media_dir = os.path.join(settings.BASE_DIR, "media", "recordings")
-            os.makedirs(media_dir, exist_ok=True)
-            output_path = os.path.join(media_dir, f"meeting_{meeting.id}.mp4")
+        media_dir = os.path.join(settings.BASE_DIR, "media", "recordings")
+        os.makedirs(media_dir, exist_ok=True)
+        output_path = os.path.join(media_dir, f"meeting_{meeting.id}.mp4")
 
-            recall_svc.download_recording(recording_url, output_path)
-            transcript = transcription_svc.transcribe_audio(output_path)
+        # Only download if we don't already have the file
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
+            recording_url = recall_svc.get_recording_url(meeting.bot_id)
+            if recording_url:
+                recall_svc.download_recording(recording_url, output_path)
+            else:
+                logger.warning("No recording URL available for bot %s", meeting.bot_id)
+                return meeting.full_transcript
+        else:
+            logger.info("Using existing recording file: %s (%d bytes)",
+                        output_path, os.path.getsize(output_path))
 
-            # Clean up the recording file
+        transcript = transcription_svc.transcribe_audio(output_path)
+
+        if transcript:
+            logger.info("Using Gemini-transcribed audio (%d chars)", len(transcript))
+            # Clean up recording only after successful transcription
             try:
                 os.remove(output_path)
             except OSError:
                 pass
-
-            if transcript:
-                logger.info("Using Whisper-transcribed audio")
-                return transcript
+            return transcript
     except Exception as exc:
         logger.warning("Recording transcription failed: %s", exc)
+        # DON'T delete the recording — keep it for retry
 
     # Fallback: return whatever we have
     logger.warning("All transcript methods failed — using existing data")

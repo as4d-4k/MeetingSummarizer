@@ -92,29 +92,50 @@ class TranscriptionService:
 
             logger.info("Audio uploaded, requesting transcription...")
 
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[
-                    uploaded_file,
-                    "Transcribe this meeting audio EXACTLY as spoken. "
-                    "The speakers mix Urdu and English (code-switching). "
-                    "Write Urdu words in Roman Urdu (Latin script) and English words normally. "
-                    "Format as a plain transcript with speaker labels if possible "
-                    "(e.g., 'Speaker 1: ...', 'Speaker 2: ...'). "
-                    "Do NOT summarize — provide the full word-for-word transcription."
-                ],
-            )
+            # Retry with exponential backoff for 503/429 errors
+            max_retries = 3
+            backoff_times = [10, 30, 60]
 
-            transcript = response.text.strip()
-            logger.info("Gemini transcription complete: %d characters", len(transcript))
+            for attempt in range(max_retries + 1):
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=[
+                            uploaded_file,
+                            "Transcribe this meeting audio EXACTLY as spoken. "
+                            "The speakers mix Urdu and English (code-switching). "
+                            "Write Urdu words in Roman Urdu (Latin script) and English words normally. "
+                            "Format as a plain transcript with speaker labels if possible "
+                            "(e.g., 'Speaker 1: ...', 'Speaker 2: ...'). "
+                            "Do NOT summarize — provide the full word-for-word transcription."
+                        ],
+                    )
 
-            # Clean up uploaded file
-            try:
-                client.files.delete(name=uploaded_file.name)
-            except Exception:
-                pass
+                    transcript = response.text.strip()
+                    logger.info("Gemini transcription complete: %d characters", len(transcript))
 
-            return transcript
+                    # Clean up uploaded file
+                    try:
+                        client.files.delete(name=uploaded_file.name)
+                    except Exception:
+                        pass
+
+                    return transcript
+
+                except Exception as api_err:
+                    err_str = str(api_err)
+                    if ("503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str or "RESOURCE_EXHAUSTED" in err_str) and attempt < max_retries:
+                        wait_time = backoff_times[attempt]
+                        logger.warning("Gemini API overloaded (attempt %d/%d), retrying in %ds: %s",
+                                       attempt + 1, max_retries + 1, wait_time, api_err)
+                        time.sleep(wait_time)
+                    else:
+                        # Clean up uploaded file before raising
+                        try:
+                            client.files.delete(name=uploaded_file.name)
+                        except Exception:
+                            pass
+                        raise
 
         except Exception as exc:
             logger.error("Gemini transcription failed: %s", exc)
