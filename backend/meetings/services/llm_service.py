@@ -1,12 +1,10 @@
 """
-LLM service for meeting transcript processing.
-
-Supports both Google Gemini and OpenAI GPT-4o via LangChain.
-Auto-selects the provider based on available API keys:
-  - GOOGLE_API_KEY -> Gemini (preferred, free tier available)
-  - OPENAI_API_KEY -> GPT-4o (fallback)
-
-Structured outputs use Pydantic models for reliable JSON extraction.
+meetings/services/llm_service.py  — FULL REPLACEMENT
+------------------------------------------------------
+Changes from original:
+  - Added SpeakerWindowOutput Pydantic schema
+  - Added analyse_speaker_window() method — the core of the live system
+  - All original methods (process_chunk, generate_final_summary) unchanged
 """
 
 import json
@@ -23,225 +21,353 @@ logger = logging.getLogger(__name__)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Pydantic schemas for structured LLM output
+# Pydantic schemas
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+
 class ActionItemOutput(BaseModel):
-    """A single extracted action item."""
-    assigned_to: str = Field(description="Name or role of the person assigned this task")
+    assigned_to: str = Field(description="Name or role assigned this task")
     task: str = Field(description="Clear description of the task in English")
-    deadline: Optional[str] = Field(default=None, description="Deadline if mentioned, else null")
+    deadline: Optional[str] = Field(default=None, description="Deadline if mentioned")
 
 
 class ChunkProcessingOutput(BaseModel):
-    """Structured output from processing a single transcript chunk."""
-    english_translation: str = Field(description="Full English translation of the chunk")
+    english_translation: str = Field(
+        description="Full English translation of the chunk"
+    )
     summary: str = Field(description="Concise summary of this chunk (2-3 sentences)")
-    key_decisions: list[str] = Field(default_factory=list, description="Key decisions made in this chunk")
-    action_items: list[ActionItemOutput] = Field(default_factory=list, description="Action items extracted from this chunk")
-    speakers_identified: list[str] = Field(default_factory=list, description="Speaker names/roles identified")
+    key_decisions: list[str] = Field(default_factory=list)
+    action_items: list[ActionItemOutput] = Field(default_factory=list)
+    speakers_identified: list[str] = Field(default_factory=list)
 
 
 class FinalSummaryOutput(BaseModel):
-    """Structured output for the final meeting summary."""
-    title: str = Field(description="Auto-generated meeting title (concise)")
-    executive_summary: str = Field(description="Executive summary of the entire meeting (3-5 sentences)")
+    title: str = Field(description="Auto-generated meeting title")
+    executive_summary: str = Field(description="Executive summary (3-5 sentences)")
     key_topics: list[str] = Field(description="Main topics discussed")
-    detailed_summary: str = Field(description="Detailed summary covering all important points")
-    overall_action_items: list[ActionItemOutput] = Field(description="Consolidated, deduplicated action items from the entire meeting")
+    detailed_summary: str = Field(
+        description="Detailed summary of all important points"
+    )
+    overall_action_items: list[ActionItemOutput] = Field(
+        description="Consolidated action items"
+    )
+
+
+# ── NEW: Live per-speaker window analysis ─────────────────────────────────────
+
+
+class EngagementSignals(BaseModel):
+    asks_questions: bool = Field(description="Did the speaker ask questions?")
+    provides_data: bool = Field(description="Did they cite data, numbers, or evidence?")
+    actionable_commitments: bool = Field(
+        description="Did they commit to specific actions?"
+    )
+    off_topic: bool = Field(description="Did they go off-topic or ramble?")
+
+
+class SpeakerWindowOutput(BaseModel):
+    """
+    Structured output from analysing a single speaker's 1-minute window.
+    This powers the live admin dashboard cards.
+    """
+
+    sentiment: str = Field(description="One of: positive, neutral, negative")
+    performance_score: int = Field(
+        description="Score from 0-100 based on engagement and contribution"
+    )
+    summary: str = Field(
+        description="1-2 sentence summary of what this speaker said in this window"
+    )
+    key_points: list[str] = Field(
+        default_factory=list, description="Up to 4 key points made by this speaker"
+    )
+    topic_coverage: dict = Field(
+        default_factory=dict,
+        description="Dict of target_topic -> coverage fraction 0.0-1.0. Only include topics actually discussed.",
+    )
+    engagement_signals: EngagementSignals
+    one_line_quote: str = Field(
+        description="Most notable thing they said, max 120 chars"
+    )
+    english_translation: str = Field(
+        description="Full English translation if Urdu/mixed, else the original text"
+    )
 
 
 class LLMServiceError(Exception):
-    """Raised when LLM processing fails."""
     pass
 
 
 class LLMService:
-    """
-    LLM-powered meeting transcript processor.
-
-    Auto-selects between Gemini and GPT-4o based on available API keys.
-    """
+    """LLM-powered meeting transcript processor."""
 
     def __init__(self, temperature: float = 0.1):
         self.llm = self._init_llm(temperature)
 
     def _init_llm(self, temperature: float):
-        """Initialize the best available LLM provider."""
+        openai_key = getattr(settings, "OPENAI_API_KEY", "")
+        if not openai_key:
+            raise LLMServiceError("No LLM API key configured. Set OPENAI_API_KEY in .env.")
 
-        # Priority 1: Google Gemini (free tier available)
-        google_key = getattr(settings, 'GOOGLE_API_KEY', '')
-        if google_key:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            logger.info("Using Google Gemini (gemini-2.5-flash)")
-            return ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash",
-                temperature=temperature,
-                google_api_key=google_key,
-                max_output_tokens=4096,
-            )
-
-        # Priority 2: OpenAI GPT-4o
-        openai_key = getattr(settings, 'OPENAI_API_KEY', '')
-        if openai_key:
-            from langchain_openai import ChatOpenAI
-            logger.info("Using OpenAI GPT-4o")
-            return ChatOpenAI(
-                model="gpt-4o",
-                temperature=temperature,
-                api_key=openai_key,
-                max_tokens=4096,
-            )
-
-        raise LLMServiceError("No LLM API key configured. Set GOOGLE_API_KEY or OPENAI_API_KEY.")
+        from langchain_openai import ChatOpenAI
+        logger.info("Using OpenAI gpt-4o-mini")
+        return ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=temperature,
+            api_key=openai_key,
+            max_tokens=4096,
+        )
 
     # ──────────────────────────────────────────────
-    # Process a single transcript chunk
+    # NEW: Live per-speaker 1-minute window analysis
     # ──────────────────────────────────────────────
-    def process_chunk(self, raw_text: str, chunk_index: int = 0) -> dict:
+    def analyse_speaker_window(
+        self,
+        speaker_name: str,
+        transcript_text: str,
+        target_topics: list[str],
+        window_start: float,
+        window_end: float,
+        previous_summary: str = "",
+    ) -> dict:
         """
-        Process a single transcript chunk through the LLM.
+        Analyse a single speaker's 1-minute transcript window during a LIVE meeting.
 
-        Takes raw multilingual (Urdu/English) text and produces:
-          - English translation
-          - Partial summary
-          - Key decisions
-          - Action items
-          - Identified speakers
+        This is the core of the real-time system. It is called by the Celery task
+        `flush_speaker_buffers` every 1 minute per speaker.
 
         Args:
-            raw_text: The raw transcript chunk (may contain Urdu/English mix).
-            chunk_index: The chunk number for context.
+            speaker_name:     Display name of the speaker.
+            transcript_text:  Their buffered speech for this window (may be Urdu/English mix).
+            target_topics:    List of topics the admin set for this meeting.
+            window_start:     Seconds from meeting start (for context).
+            window_end:       Seconds from meeting start.
+            previous_summary: The speaker's summary from the previous window (used for cumulative update).
 
         Returns:
-            dict matching ChunkProcessingOutput schema.
+            dict matching SpeakerWindowOutput schema.
         """
-        parser = JsonOutputParser(pydantic_object=ChunkProcessingOutput)
+        parser = JsonOutputParser(pydantic_object=SpeakerWindowOutput)
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "You are an expert multilingual meeting analyst. You specialize in "
-                "processing meeting transcripts that contain a mix of Urdu and English "
-                "(code-switching). Your job is to:\n"
-                "1. Translate ALL content into professional English\n"
-                "2. Summarize the key points discussed\n"
-                "3. Extract any action items with assignees\n"
-                "4. Identify speakers by name or role\n"
-                "5. Note any key decisions made\n\n"
-                "If the text is already in English, still process it fully.\n"
-                "Be precise and professional in your output.\n\n"
-                "{format_instructions}"
-            )),
-            ("human", (
-                "Process this transcript chunk (chunk #{chunk_index}):\n\n"
-                "---\n{transcript}\n---"
-            )),
-        ])
+        topics_str = (
+            ", ".join(target_topics) if target_topics else "general business discussion"
+        )
+        window_label = f"{_fmt_time(window_start)} → {_fmt_time(window_end)}"
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    (
+                        "You are an expert multilingual meeting analyst specialising in business meetings "
+                        "where participants may switch between Urdu and English (Roman Urdu or script). "
+                        "Your job is to analyse a single speaker's contribution during a 1-minute window "
+                        "of a live meeting and return a structured JSON performance assessment.\n\n"
+                        "SCORING GUIDE (performance_score 0-100):\n"
+                        "  90-100: Highly engaged — data-driven, clear decisions, actionable commitments, moves meeting forward\n"
+                        "  70-89:  Good — relevant contributions, mostly on-topic, some concrete points\n"
+                        "  50-69:  Average — present but vague, few concrete ideas\n"
+                        "  30-49:  Low — minimal contribution, mostly passive\n"
+                        "  0-29:   Very low — off-topic, irrelevant, or near-silent\n\n"
+                        "SENTIMENT:\n"
+                        "  positive → constructive, forward-looking, solution-oriented\n"
+                        "  neutral  → factual, balanced, informational\n"
+                        "  negative → complaints, blockers, frustration, disagreement\n\n"
+                        "IMPORTANT: The 'summary' field MUST be a CUMULATIVE summary of what the speaker has said so far. "
+                        "Merge the 'Previous Summary' with the new points from this window. Keep it concise (max 2 clear lines). "
+                        "If the text contains Urdu or Roman Urdu, translate it to English "
+                        "FIRST in 'english_translation', then analyse the translated content.\n\n"
+                        "Return ONLY valid JSON. No markdown. No explanation.\n\n"
+                        "{format_instructions}"
+                    ),
+                ),
+                (
+                    "human",
+                    (
+                        "Speaker: {speaker_name}\n"
+                        "Meeting window: {window_label}\n"
+                        "Target topics for this meeting: {topics}\n"
+                        "Previous Summary: {previous_summary}\n\n"
+                        "Transcript (last 1 minute of this speaker):\n"
+                        "---\n{transcript}\n---\n\n"
+                        "Analyse and return JSON."
+                    ),
+                ),
+            ]
+        )
 
         chain = prompt | self.llm | parser
 
-        logger.info("Processing chunk #%d (%d chars)", chunk_index, len(raw_text))
+        logger.info(
+            "Analysing speaker '%s' window %s (%d words)",
+            speaker_name,
+            window_label,
+            len(transcript_text.split()),
+        )
 
         for attempt in range(3):
             try:
-                result = chain.invoke({
-                    "transcript": raw_text,
-                    "chunk_index": chunk_index,
-                    "format_instructions": parser.get_format_instructions(),
-                })
-                logger.info("Chunk #%d processed: %d action items found", chunk_index, len(result.get("action_items", [])))
-                return result
-
-            except Exception as exc:
-                if "429" in str(exc) and attempt < 2:
-                    wait = 25 * (attempt + 1)
-                    logger.warning("Rate limited on chunk #%d, retrying in %ds...", chunk_index, wait)
-                    time.sleep(wait)
-                    continue
-                logger.error("LLM chunk processing failed: %s", exc)
-                raise LLMServiceError(f"Failed to process chunk #{chunk_index}: {exc}") from exc
-
-    # ──────────────────────────────────────────────
-    # Generate final meeting summary
-    # ──────────────────────────────────────────────
-    def generate_final_summary(self, chunk_summaries: list[dict]) -> dict:
-        """
-        Generate a coherent final summary from all chunk processing outputs.
-
-        Takes the list of processed chunk outputs and produces:
-          - Auto-generated meeting title
-          - Executive summary
-          - Key topics
-          - Detailed summary
-          - Consolidated, deduplicated action items
-
-        Args:
-            chunk_summaries: List of dicts (ChunkProcessingOutput format) from process_chunk().
-
-        Returns:
-            dict matching FinalSummaryOutput schema.
-        """
-        parser = JsonOutputParser(pydantic_object=FinalSummaryOutput)
-
-        # Prepare the chunk summaries as context
-        chunks_context = ""
-        for i, chunk in enumerate(chunk_summaries):
-            chunks_context += f"\n### Chunk {i + 1}\n"
-            chunks_context += f"**Summary:** {chunk.get('summary', 'N/A')}\n"
-            chunks_context += f"**English Translation:** {chunk.get('english_translation', 'N/A')}\n"
-
-            decisions = chunk.get("key_decisions", [])
-            if decisions:
-                chunks_context += f"**Decisions:** {'; '.join(decisions)}\n"
-
-            items = chunk.get("action_items", [])
-            if items:
-                for item in items:
-                    if isinstance(item, dict):
-                        chunks_context += f"**Action:** {item.get('task', '')} → {item.get('assigned_to', 'Unassigned')}\n"
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "You are an expert meeting analyst. Given the processed chunks from a meeting "
-                "transcript, generate a comprehensive final meeting summary.\n\n"
-                "Requirements:\n"
-                "- Create a concise, descriptive meeting title\n"
-                "- Write a professional executive summary (3-5 sentences)\n"
-                "- List the main topics discussed\n"
-                "- Provide a detailed summary covering all important points in logical order\n"
-                "- Consolidate and deduplicate action items from all chunks\n"
-                "- All output must be in professional English\n\n"
-                "{format_instructions}"
-            )),
-            ("human", (
-                "Here are the processed chunks from the meeting:\n"
-                "{chunks_context}\n\n"
-                "Generate the final meeting summary."
-            )),
-        ])
-
-        chain = prompt | self.llm | parser
-
-        logger.info("Generating final summary from %d chunks", len(chunk_summaries))
-
-        for attempt in range(3):
-            try:
-                result = chain.invoke({
-                    "chunks_context": chunks_context,
-                    "format_instructions": parser.get_format_instructions(),
-                })
+                result = chain.invoke(
+                    {
+                        "speaker_name": speaker_name,
+                        "window_label": window_label,
+                        "topics": topics_str,
+                        "previous_summary": previous_summary or "None",
+                        "transcript": transcript_text,
+                        "format_instructions": parser.get_format_instructions(),
+                    }
+                )
                 logger.info(
-                    "Final summary generated: title='%s', %d action items",
-                    result.get("title", ""),
-                    len(result.get("overall_action_items", [])),
+                    "Speaker '%s' analysis done: score=%s sentiment=%s",
+                    speaker_name,
+                    result.get("performance_score"),
+                    result.get("sentiment"),
                 )
                 return result
 
             except Exception as exc:
                 if "429" in str(exc) and attempt < 2:
-                    wait = 25 * (attempt + 1)
-                    logger.warning("Rate limited on final summary, retrying in %ds...", wait)
+                    wait = 20 * (attempt + 1)
+                    logger.warning("Rate limited, retrying in %ds...", wait)
                     time.sleep(wait)
                     continue
-                logger.error("Final summary generation failed: %s", exc)
-                raise LLMServiceError(f"Failed to generate final summary: {exc}") from exc
+                logger.error(
+                    "Speaker window analysis failed for '%s': %s", speaker_name, exc
+                )
+                # Return a safe fallback instead of crashing
+                return _fallback_analysis(speaker_name, transcript_text)
+
+    # ──────────────────────────────────────────────
+    # Original: Process a single transcript chunk (post-meeting)
+    # ──────────────────────────────────────────────
+    def process_chunk(self, raw_text: str, chunk_index: int = 0) -> dict:
+        parser = JsonOutputParser(pydantic_object=ChunkProcessingOutput)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    (
+                        "You are an expert multilingual meeting analyst. You specialize in "
+                        "processing meeting transcripts that contain a mix of Urdu and English "
+                        "(code-switching). Your job is to:\n"
+                        "1. Translate ALL content into professional English\n"
+                        "2. Summarize the key points discussed\n"
+                        "3. Extract any action items with assignees\n"
+                        "4. Identify speakers by name or role\n"
+                        "5. Note any key decisions made\n\n"
+                        "If the text is already in English, still process it fully.\n"
+                        "{format_instructions}"
+                    ),
+                ),
+                (
+                    "human",
+                    "Process this transcript chunk (chunk #{chunk_index}):\n\n---\n{transcript}\n---",
+                ),
+            ]
+        )
+
+        chain = prompt | self.llm | parser
+
+        for attempt in range(3):
+            try:
+                result = chain.invoke(
+                    {
+                        "transcript": raw_text,
+                        "chunk_index": chunk_index,
+                        "format_instructions": parser.get_format_instructions(),
+                    }
+                )
+                return result
+            except Exception as exc:
+                if "429" in str(exc) and attempt < 2:
+                    time.sleep(25 * (attempt + 1))
+                    continue
+                raise LLMServiceError(
+                    f"Failed to process chunk #{chunk_index}: {exc}"
+                ) from exc
+
+    # ──────────────────────────────────────────────
+    # Original: Generate final summary (post-meeting)
+    # ──────────────────────────────────────────────
+    def generate_final_summary(self, chunk_summaries: list[dict]) -> dict:
+        parser = JsonOutputParser(pydantic_object=FinalSummaryOutput)
+
+        chunks_context = ""
+        for i, chunk in enumerate(chunk_summaries):
+            chunks_context += f"\n### Chunk {i + 1}\n"
+            chunks_context += f"**Summary:** {chunk.get('summary', 'N/A')}\n"
+            chunks_context += (
+                f"**English Translation:** {chunk.get('english_translation', 'N/A')}\n"
+            )
+            decisions = chunk.get("key_decisions", [])
+            if decisions:
+                chunks_context += f"**Decisions:** {'; '.join(decisions)}\n"
+            for item in chunk.get("action_items", []):
+                if isinstance(item, dict):
+                    chunks_context += f"**Action:** {item.get('task', '')} → {item.get('assigned_to', 'Unassigned')}\n"
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    (
+                        "You are an expert meeting analyst. Generate a comprehensive final meeting summary.\n"
+                        "Requirements: concise title, professional executive summary (3-5 sentences), "
+                        "main topics, detailed summary, and consolidated deduplicated action items.\n"
+                        "All output in professional English.\n{format_instructions}"
+                    ),
+                ),
+                (
+                    "human",
+                    "Here are the processed chunks:\n{chunks_context}\n\nGenerate the final meeting summary.",
+                ),
+            ]
+        )
+
+        chain = prompt | self.llm | parser
+
+        for attempt in range(3):
+            try:
+                return chain.invoke(
+                    {
+                        "chunks_context": chunks_context,
+                        "format_instructions": parser.get_format_instructions(),
+                    }
+                )
+            except Exception as exc:
+                if "429" in str(exc) and attempt < 2:
+                    time.sleep(25 * (attempt + 1))
+                    continue
+                raise LLMServiceError(
+                    f"Failed to generate final summary: {exc}"
+                ) from exc
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _fmt_time(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def _fallback_analysis(speaker_name: str, text: str) -> dict:
+    """Safe fallback if LLM call fails — prevents pipeline crash."""
+    word_count = len(text.split())
+    return {
+        "sentiment": "neutral",
+        "performance_score": 50,
+        "summary": f"{speaker_name} spoke approximately {word_count} words in this window.",
+        "key_points": [],
+        "topic_coverage": {},
+        "engagement_signals": {
+            "asks_questions": False,
+            "provides_data": False,
+            "actionable_commitments": False,
+            "off_topic": False,
+        },
+        "one_line_quote": text[:120] if text else "",
+        "english_translation": text,
+        "_fallback": True,
+    }

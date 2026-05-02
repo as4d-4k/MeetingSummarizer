@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
+import pymysql
 
+pymysql.install_as_MySQLdb()
 # ──────────────────────────────────────────────
 # PATH & ENV
 # ──────────────────────────────────────────────
@@ -135,7 +137,9 @@ AUTH_USER_MODEL = "accounts.User"
 # PASSWORD VALIDATION
 # ──────────────────────────────────────────────
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -229,22 +233,28 @@ CELERY_TIMEZONE = TIME_ZONE
 # ──────────────────────────────────────────────
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
-        },
-    },
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
 }
-
-
 # ──────────────────────────────────────────────
 # API KEYS (prep for Layers 3-4)
 # ──────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 RECALL_AI_API_KEY = os.getenv("RECALL_AI_API_KEY", "")
 
+# ── Webhook base URL (for Recall.ai to reach your server) ──
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 
+CELERY_BEAT_SCHEDULE = {
+    "flush-speaker-buffers": {
+        "task": "meetings.tasks.flush_speaker_buffers",
+        "schedule": 60.0,  # seconds (1 minute)
+    },
+    "process-live-chunks": {
+        "task": "meetings.tasks.process_live_chunks",
+        "schedule": 60.0,
+    },
+}
 # ──────────────────────────────────────────────
 # LOGGING
 # ──────────────────────────────────────────────

@@ -1,9 +1,8 @@
 """
 Audio transcription service.
 
-Supports two providers (auto-selects based on available API keys):
-  1. Google Gemini 2.5 Flash (free tier) — preferred
-  2. OpenAI Whisper (paid)
+Provider:
+  - OpenAI Whisper-1 (whisper-1)
 
 Also handles:
   - Converting Recall.ai transcript segments into a unified text format
@@ -33,15 +32,9 @@ class TranscriptionService:
     """
 
     def __init__(self):
-        self.provider = self._detect_provider()
-
-    def _detect_provider(self) -> str:
-        """Detect which transcription provider to use."""
-        if getattr(settings, 'GOOGLE_API_KEY', ''):
-            return 'gemini'
-        if getattr(settings, 'OPENAI_API_KEY', ''):
-            return 'openai'
-        raise TranscriptionServiceError("No API key configured. Set GOOGLE_API_KEY or OPENAI_API_KEY.")
+        if not getattr(settings, 'OPENAI_API_KEY', ''):
+            raise TranscriptionServiceError("No API key configured. Set OPENAI_API_KEY in .env.")
+        self.provider = 'openai'
 
     # ──────────────────────────────────────────────
     # Mode 1: Transcribe audio file
@@ -62,84 +55,10 @@ class TranscriptionService:
         if not file_path.exists():
             raise TranscriptionServiceError(f"Audio file not found: {audio_file_path}")
 
-        logger.info("Transcribing audio file: %s (%.1f MB) using %s",
-                     file_path.name, file_path.stat().st_size / 1e6, self.provider)
+        logger.info("Transcribing audio file: %s (%.1f MB) using OpenAI Whisper",
+                     file_path.name, file_path.stat().st_size / 1e6)
 
-        if self.provider == 'gemini':
-            return self._transcribe_with_gemini(file_path)
-        else:
-            return self._transcribe_with_whisper(file_path)
-
-    def _transcribe_with_gemini(self, file_path: Path) -> str:
-        """Transcribe using Google Gemini 2.5 Flash (handles audio natively)."""
-        import time
-        try:
-            from google import genai
-
-            client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-
-            # Upload the audio file to Gemini
-            logger.info("Uploading audio to Gemini...")
-            uploaded_file = client.files.upload(file=file_path)
-
-            # Wait for file to be processed
-            while uploaded_file.state == "PROCESSING":
-                time.sleep(2)
-                uploaded_file = client.files.get(name=uploaded_file.name)
-
-            if uploaded_file.state != "ACTIVE":
-                raise TranscriptionServiceError(f"File upload failed: state={uploaded_file.state}")
-
-            logger.info("Audio uploaded, requesting transcription...")
-
-            # Retry with exponential backoff for 503/429 errors
-            max_retries = 3
-            backoff_times = [10, 30, 60]
-
-            for attempt in range(max_retries + 1):
-                try:
-                    response = client.models.generate_content(
-                        model="gemini-2.5-flash",
-                        contents=[
-                            uploaded_file,
-                            "Transcribe this meeting audio EXACTLY as spoken. "
-                            "The speakers mix Urdu and English (code-switching). "
-                            "Write Urdu words in Roman Urdu (Latin script) and English words normally. "
-                            "Format as a plain transcript with speaker labels if possible "
-                            "(e.g., 'Speaker 1: ...', 'Speaker 2: ...'). "
-                            "Do NOT summarize — provide the full word-for-word transcription."
-                        ],
-                    )
-
-                    transcript = response.text.strip()
-                    logger.info("Gemini transcription complete: %d characters", len(transcript))
-
-                    # Clean up uploaded file
-                    try:
-                        client.files.delete(name=uploaded_file.name)
-                    except Exception:
-                        pass
-
-                    return transcript
-
-                except Exception as api_err:
-                    err_str = str(api_err)
-                    if ("503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str or "RESOURCE_EXHAUSTED" in err_str) and attempt < max_retries:
-                        wait_time = backoff_times[attempt]
-                        logger.warning("Gemini API overloaded (attempt %d/%d), retrying in %ds: %s",
-                                       attempt + 1, max_retries + 1, wait_time, api_err)
-                        time.sleep(wait_time)
-                    else:
-                        # Clean up uploaded file before raising
-                        try:
-                            client.files.delete(name=uploaded_file.name)
-                        except Exception:
-                            pass
-                        raise
-
-        except Exception as exc:
-            logger.error("Gemini transcription failed: %s", exc)
-            raise TranscriptionServiceError(f"Gemini transcription failed: {exc}") from exc
+        return self._transcribe_with_whisper(file_path)
 
     def _transcribe_with_whisper(self, file_path: Path) -> str:
         """Transcribe using OpenAI Whisper API."""
@@ -195,7 +114,11 @@ class TranscriptionService:
         for segment in transcript_segments:
             speaker = segment.get("speaker", "Unknown Speaker")
             words = segment.get("words", [])
-            text = " ".join(w.get("text", "") for w in words).strip()
+            text = segment.get("text", "").strip()
+            
+            if not text and words:
+                text = " ".join(w.get("text", "") for w in words).strip()
+                
             if text:
                 lines.append(f"{speaker}: {text}")
 
@@ -209,7 +132,7 @@ class TranscriptionService:
     def chunk_transcript(
         self,
         transcript: str,
-        chunk_duration_seconds: float = 180.0,
+        chunk_duration_seconds: float = 60.0,
         total_duration_seconds: float | None = None,
     ) -> list[dict]:
         """
@@ -220,11 +143,11 @@ class TranscriptionService:
 
         Args:
             transcript: The full transcript text.
-            chunk_duration_seconds: Target chunk duration (default 3 minutes).
+            chunk_duration_seconds: Target chunk duration (default 1 minute).
             total_duration_seconds: Total meeting duration in seconds (if known).
 
         Returns:
-            List of dicts: [{"chunk_index": 0, "text": "...", "start": 0.0, "end": 180.0}, ...]
+            List of dicts: [{"chunk_index": 0, "text": "...", "start": 0.0, "end": 60.0}, ...]
         """
         if not transcript.strip():
             return []

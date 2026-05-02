@@ -26,6 +26,7 @@ channels-redis>=4.1
 # LLM Pipeline
 langchain>=0.1
 langchain-openai>=0.1
+langchain-google-genai>=1.0
 langchain-core>=0.1
 openai>=1.0
 

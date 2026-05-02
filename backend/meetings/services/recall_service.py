@@ -1,12 +1,5 @@
 """
-Recall.ai API integration service.
-
-Handles:
-  - Creating a bot that joins a meeting
-  - Polling bot status
-  - Downloading the meeting recording
-
-Docs: https://docs.recall.ai/reference
+meetings/services/recall_service.py
 """
 
 import logging
@@ -20,6 +13,7 @@ RECALL_API_BASE = "https://ap-northeast-1.recall.ai/api/v1"
 
 class RecallServiceError(Exception):
     """Raised when a Recall.ai API call fails."""
+
     pass
 
 
@@ -39,48 +33,52 @@ class RecallService:
     # ──────────────────────────────────────────────
     # Create Bot
     # ──────────────────────────────────────────────
-    def create_bot(self, meeting_url: str, bot_name: str = "Meeting Summarizer Bot") -> dict:
-        """
-        Send a bot to join the meeting.
-
-        Args:
-            meeting_url: The meeting link (Zoom, Google Meet, Teams, etc.)
-            bot_name: Display name for the bot in the meeting.
-
-        Returns:
-            dict with at least {"id": "<bot_id>", "status": "..."}.
-        """
+    def create_bot(self, meeting_url: str, bot_name: str = "MeetingIntel Bot") -> dict:
+        webhook_base = self._get_webhook_base()
         payload = {
             "meeting_url": meeting_url,
             "bot_name": bot_name,
+            "recording_config": {
+                "transcript": {
+                    "provider": {
+                        "gladia_v2_streaming": {
+                            "language_config": {
+                                "languages": ["ur", "en"]
+                            }
+                        }
+                    }
+                },
+                "realtime_endpoints": [
+                    {
+                        "type": "webhook",
+                        "url": f"{webhook_base}/api/webhooks/recall/transcript/",
+                        "events": ["transcript.data"]
+                    }
+                ]
+            }
         }
 
         url = f"{RECALL_API_BASE}/bot/"
-        logger.info("Creating Recall.ai bot for %s", meeting_url)
+        logger.info("Creating bot for %s", meeting_url)
 
         try:
-            response = requests.post(url, json=payload, headers=self.headers, timeout=60)
+            response = requests.post(
+                url, json=payload, headers=self.headers, timeout=60
+            )
+            logger.info(
+                "Recall response: %s %s", response.status_code, response.text[:500]
+            )
             response.raise_for_status()
-            data = response.json()
-            logger.info("Bot created: id=%s", data.get("id"))
-            return data
+            return response.json()
         except requests.exceptions.RequestException as exc:
-            # Log the response body for debugging
-            if hasattr(exc, 'response') and exc.response is not None:
-                logger.error("Recall API error body: %s", exc.response.text[:500])
-            logger.error("Failed to create bot: %s", exc)
+            if hasattr(exc, "response") and exc.response is not None:
+                logger.error("Recall API error: %s", exc.response.text[:500])
             raise RecallServiceError(f"Failed to create bot: {exc}") from exc
 
     # ──────────────────────────────────────────────
     # Get Bot Status
     # ──────────────────────────────────────────────
     def get_bot_status(self, bot_id: str) -> dict:
-        """
-        Retrieve the current status of a bot.
-
-        Returns:
-            dict with bot details including "status_changes" list.
-        """
         url = f"{RECALL_API_BASE}/bot/{bot_id}/"
         logger.debug("Polling bot status: %s", bot_id)
 
@@ -89,88 +87,90 @@ class RecallService:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as exc:
-            logger.error("Failed to get bot status: %s", exc)
             raise RecallServiceError(f"Failed to get bot status: {exc}") from exc
 
     # ──────────────────────────────────────────────
     # Get Transcript
     # ──────────────────────────────────────────────
     def get_transcript(self, bot_id: str) -> list[dict]:
-        """
-        Retrieve the transcript from a completed bot session.
 
-        Returns:
-            List of transcript segments, e.g.:
-            [{"speaker": "User 1", "words": [{"text": "...", "start_time": 0.0, ...}]}]
-        """
         url = f"{RECALL_API_BASE}/bot/{bot_id}/transcript/"
         logger.info("Fetching transcript for bot %s", bot_id)
 
         try:
             response = requests.get(url, headers=self.headers, timeout=30)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+
+            # Log the raw response so we can see the format
+            logger.info("Transcript API raw response: %s", str(data)[:1000])
+
+            results = []
+            if isinstance(data, dict):
+                results = data.get("results", [])
+                logger.info("Transcript results count: %d", len(results))
+            elif isinstance(data, list):
+                results = data
+                logger.info("Transcript list count: %d", len(data))
+
+            all_segments = []
+            for item in results:
+                # If the item already looks like a segment
+                if "speaker" in item or "words" in item or "text" in item:
+                    all_segments.append(item)
+                    continue
+
+                # Otherwise look for a download_url
+                download_url = item.get("data", {}).get("download_url")
+                if download_url:
+                    try:
+                        transcript_resp = requests.get(download_url, timeout=30)
+                        transcript_resp.raise_for_status()
+                        segments = transcript_resp.json()
+                        if isinstance(segments, list):
+                            all_segments.extend(segments)
+                        elif isinstance(segments, dict) and "segments" in segments:
+                            all_segments.extend(segments["segments"])
+                    except Exception as e:
+                        logger.error("Failed to fetch transcript from download_url: %s", e)
+
+            if all_segments:
+                return all_segments
+
+            return results
+
         except requests.exceptions.RequestException as exc:
-            if hasattr(exc, 'response') and exc.response is not None:
-                logger.error("Transcript API error body: %s", exc.response.text[:500])
-            logger.error("Failed to get transcript: %s", exc)
+            if hasattr(exc, "response") and exc.response is not None:
+                logger.error("Transcript API error: %s", exc.response.text[:500])
             raise RecallServiceError(f"Failed to get transcript: {exc}") from exc
 
     # ──────────────────────────────────────────────
     # Get Recording URL
     # ──────────────────────────────────────────────
     def get_recording_url(self, bot_id: str) -> str | None:
-        """
-        Get the download URL for the meeting recording.
-
-        Returns:
-            URL string if recording is available, None otherwise.
-        """
         bot_data = self.get_bot_status(bot_id)
 
-        # Check recordings array (Recall.ai v1 format)
         recordings = bot_data.get("recordings", [])
         if recordings:
             for rec in recordings:
-                # Path: recordings[].media_shortcuts.video_mixed.data.download_url
                 media_shortcuts = rec.get("media_shortcuts", {})
                 video_mixed = media_shortcuts.get("video_mixed", {})
                 download_url = video_mixed.get("data", {}).get("download_url")
                 if download_url:
-                    logger.info("Recording URL obtained from media_shortcuts for bot %s", bot_id)
                     return download_url
 
-                # Fallback: check media.video.url
                 media = rec.get("media", {})
                 if isinstance(media, dict):
                     video_url = media.get("video", {}).get("url")
                     if video_url:
-                        logger.info("Recording URL obtained from media.video for bot %s", bot_id)
                         return video_url
 
-        # Fallback: check top-level fields
-        recording = bot_data.get("video_url") or bot_data.get("media", {}).get("video_url")
-        if recording:
-            logger.info("Recording URL obtained for bot %s", bot_id)
-            return recording
-
-        logger.warning("No recording available yet for bot %s. Bot data keys: %s", bot_id, list(bot_data.keys()))
-        return None
+        return bot_data.get("video_url") or bot_data.get("media", {}).get("video_url")
 
     # ──────────────────────────────────────────────
     # Download Recording
     # ──────────────────────────────────────────────
     def download_recording(self, recording_url: str, output_path: str) -> str:
-        """
-        Download the recording file to local storage.
-
-        Args:
-            recording_url: URL of the recording.
-            output_path: Local file path to save the recording.
-
-        Returns:
-            The output_path where the file was saved.
-        """
         logger.info("Downloading recording to %s", output_path)
 
         try:
@@ -181,8 +181,17 @@ class RecallService:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-            logger.info("Recording downloaded successfully: %s", output_path)
             return output_path
         except requests.exceptions.RequestException as exc:
-            logger.error("Failed to download recording: %s", exc)
             raise RecallServiceError(f"Failed to download recording: {exc}") from exc
+
+    # ──────────────────────────────────────────────
+    # Helpers
+    # ──────────────────────────────────────────────
+    @staticmethod
+    def _get_webhook_base() -> str:
+        base = getattr(settings, "WEBHOOK_BASE_URL", "")
+        if not base:
+            logger.warning("WEBHOOK_BASE_URL not set in settings.")
+            return "http://localhost:8000"
+        return base.rstrip("/")

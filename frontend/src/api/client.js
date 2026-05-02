@@ -60,6 +60,7 @@ export const getProfile = () => client.get('/accounts/profile/');
 // Meetings
 export const getMeetings = (params) => client.get('/meetings/', { params });
 export const getMeeting = (id) => client.get(`/meetings/${id}/`);
+export const getLiveStatus = (id) => client.get(`/meetings/${id}/live-status/`);
 export const createMeeting = (data) => client.post('/meetings/', data);
 export const deleteMeeting = (id) => client.delete(`/meetings/${id}/`);
 export const startBot = (id) => client.post(`/meetings/${id}/start-bot/`);

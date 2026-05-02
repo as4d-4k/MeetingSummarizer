@@ -1,34 +1,29 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getMeeting, startBot, reprocessMeeting, deleteMeeting } from '../api/client';
+import { getMeeting, startBot, reprocessMeeting, deleteMeeting, getLiveStatus } from '../api/client';
 import ActionItemList from '../components/ActionItemList';
+import LiveDashboard from '../components/LiveDashboard';
 import useWebSocket from '../hooks/useWebSocket';
 
-const statusLabels = {
-  pending: 'Pending',
-  bot_joining: 'Bot Joining',
-  in_progress: 'In Progress',
-  processing: 'Processing',
-  completed: 'Completed',
-  failed: 'Failed',
-};
-
-const statusBadgeClass = {
-  pending: 'badge-pending',
-  bot_joining: 'badge-bot-joining',
-  in_progress: 'badge-in-progress',
-  processing: 'badge-processing',
-  completed: 'badge-completed',
-  failed: 'badge-failed',
+const STATUS_META = {
+  pending:     { label: 'Pending',     color: '#FFB800', bg: 'rgba(255,184,0,0.1)'    },
+  bot_joining: { label: 'Bot Joining', color: '#6C63FF', bg: 'rgba(108,99,255,0.1)'  },
+  in_progress: { label: 'Live',        color: '#FF6B6B', bg: 'rgba(255,107,107,0.1)' },
+  processing:  { label: 'Processing',  color: '#6C63FF', bg: 'rgba(108,99,255,0.1)'  },
+  completed:   { label: 'Completed',   color: '#00C896', bg: 'rgba(0,200,150,0.1)'   },
+  failed:      { label: 'Failed',      color: '#FF6B6B', bg: 'rgba(255,107,107,0.1)' },
 };
 
 export default function MeetingDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [meeting, setMeeting] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [meeting, setMeeting]         = useState(null);
+  const [loading, setLoading]         = useState(true);
   const [actionLoading, setActionLoading] = useState('');
-  const [activeTab, setActiveTab] = useState('summary');
+  const [activeTab, setActiveTab]     = useState('summary');
+  const [liveSpeakers, setLiveSpeakers] = useState([]);
+  const [liveFeed, setLiveFeed]       = useState([]);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
 
   const fetchMeeting = async () => {
     try {
@@ -41,269 +36,527 @@ export default function MeetingDetail() {
     }
   };
 
-  useEffect(() => {
-    fetchMeeting();
-  }, [id]);
+  const fetchLiveStatus = async () => {
+    try {
+      const { data } = await getLiveStatus(id);
+      setLiveSpeakers(data.speakers || []);
+      setLiveFeed(data.recent_feed || []);
+    } catch {}
+  };
 
-  // WebSocket for live updates
+  useEffect(() => { fetchMeeting(); fetchLiveStatus(); }, [id]);
+
   const handleWsMessage = useCallback((msg) => {
     if (msg.type === 'status_change') {
-      setMeeting((prev) => prev ? { ...prev, status: msg.data.status } : prev);
+      setMeeting(p => p ? { ...p, status: msg.data.status } : p);
       if (msg.data.status === 'completed') fetchMeeting();
-    } else if (msg.type === 'summary_update' || msg.type === 'transcript_chunk' || msg.type === 'action_item') {
+    } else if (['summary_update','transcript_chunk','action_item'].includes(msg.type)) {
       fetchMeeting();
+    } else if (msg.type === 'speaker_joined') {
+      setLiveSpeakers(p => [...p, { id: msg.data.speaker_id, name: msg.data.speaker_name, word_count: 0, talk_time_seconds: 0 }]);
+    } else if (msg.type === 'transcript_segment') {
+      const { speaker_id, speaker_name, text, start_time, end_time, word_count, talk_time_seconds } = msg.data;
+      setLiveFeed(p => [{ speaker_name, text, start_time, end_time }, ...p].slice(0, 50));
+      setLiveSpeakers(p => {
+        const idx = p.findIndex(s => s.id === speaker_id);
+        const updated = idx === -1
+          ? [...p, { id: speaker_id, name: speaker_name, word_count, talk_time_seconds, is_speaking: true }]
+          : p.map((s, i) => i === idx ? { ...s, word_count, talk_time_seconds, is_speaking: true, last_quote: text } : s);
+        return updated.map(s => s.id === speaker_id ? s : { ...s, is_speaking: false });
+      });
+    } else if (msg.type === 'analysis_update') {
+      const d = msg.data;
+      setLiveSpeakers(p => p.map(s => s.id === d.speaker_id ? {
+        ...s,
+        performance_score: d.performance_score,
+        sentiment: d.sentiment,
+        latest_summary: d.summary,
+        key_points: d.key_points,
+        topic_coverage: d.topic_coverage,
+        last_quote: d.one_line_quote || s.last_quote,
+      } : s));
     }
   }, [id]);
+
   const { connected: wsConnected } = useWebSocket(id, handleWsMessage);
 
   const handleStartBot = async () => {
     setActionLoading('start-bot');
-    try {
-      await startBot(id);
-      fetchMeeting();
-    } catch (err) {
-      alert(err.response?.data?.error || 'Failed to start bot.');
-    } finally {
-      setActionLoading('');
-    }
+    try { await startBot(id); fetchMeeting(); }
+    catch (err) { alert(err.response?.data?.error || 'Failed to start bot.'); }
+    finally { setActionLoading(''); }
   };
 
   const handleReprocess = async () => {
     setActionLoading('reprocess');
-    try {
-      await reprocessMeeting(id);
-      fetchMeeting();
-    } catch (err) {
-      alert(err.response?.data?.error || 'Failed to reprocess.');
-    } finally {
-      setActionLoading('');
-    }
+    try { await reprocessMeeting(id); fetchMeeting(); }
+    catch (err) { alert(err.response?.data?.error || 'Failed to reprocess.'); }
+    finally { setActionLoading(''); }
   };
 
   const handleDelete = async () => {
-    if (!confirm('Are you sure you want to delete this meeting?')) return;
-    try {
-      await deleteMeeting(id);
-      navigate('/dashboard');
-    } catch (err) {
-      alert('Failed to delete meeting.');
-    }
+    try { await deleteMeeting(id); navigate('/dashboard'); }
+    catch { alert('Failed to delete meeting.'); }
   };
 
-  if (loading) {
-    return (
-      <div className="p-8 space-y-6">
-        <div className="skeleton h-10 w-64" />
-        <div className="skeleton h-6 w-96" />
-        <div className="grid grid-cols-2 gap-4">
-          <div className="skeleton h-48" />
-          <div className="skeleton h-48" />
-        </div>
-      </div>
-    );
-  }
+  if (loading) return (
+    <div className="detail-loading">
+      {[80, 48, 200, 200].map((h, i) => (
+        <div key={i} className="skeleton" style={{ height: h, borderRadius: 12, marginBottom: 16 }} />
+      ))}
+    </div>
+  );
 
-  if (!meeting) {
-    return (
-      <div className="p-8 text-center">
-        <h2 className="text-xl font-bold text-white">Meeting not found</h2>
-        <button onClick={() => navigate('/dashboard')} className="btn-accent mt-4">
-          Back to Dashboard
-        </button>
-      </div>
-    );
-  }
+  if (!meeting) return (
+    <div className="detail-not-found">
+      <h2>Meeting not found</h2>
+      <button onClick={() => navigate('/dashboard')} className="btn-accent">Back to Dashboard</button>
+    </div>
+  );
+
+  const meta    = STATUS_META[meeting.status] || STATUS_META.pending;
+  const isLive  = ['in_progress','bot_joining'].includes(meeting.status);
+  const isBusy  = ['bot_joining','in_progress','processing'].includes(meeting.status);
 
   const tabs = [
-    { key: 'summary', label: 'Summary', icon: '📝' },
-    { key: 'transcript', label: 'Transcript', icon: '📜' },
-    { key: 'actions', label: `Action Items (${meeting.action_items?.length || 0})`, icon: '✅' },
-    { key: 'chunks', label: `Chunks (${meeting.transcript_chunks?.length || 0})`, icon: '🧩' },
+    { key: 'summary',    label: 'Summary',                                  icon: <SummaryIcon /> },
+    { key: 'live',       label: 'Live Dashboard',                           icon: <LiveIcon />,   pulse: isLive },
+    { key: 'transcript', label: 'Transcript',                               icon: <TranscriptIcon /> },
+    { key: 'actions',    label: `Actions (${meeting.action_items?.length || 0})`, icon: <TaskIcon /> },
+    { key: 'chunks',     label: `Chunks (${meeting.transcript_chunks?.length || 0})`, icon: <ChunkIcon /> },
   ];
 
   return (
-    <div className="p-8 max-w-5xl">
-      {/* Header */}
-      <div className="flex items-start justify-between mb-6 animate-fade-in">
-        <div>
-          <button
-            onClick={() => navigate('/dashboard')}
-            className="text-[var(--color-surface-500)] hover:text-white text-sm flex items-center gap-1 mb-3 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-            </svg>
-            Back
-          </button>
-          <h1 className="text-2xl font-bold text-white">{meeting.title || 'Untitled Meeting'}</h1>
-          <div className="flex items-center gap-4 mt-2">
-            <span className={`badge ${statusBadgeClass[meeting.status] || 'badge-pending'}`}>
-              {statusLabels[meeting.status] || meeting.status}
-            </span>
-            <span className="text-[var(--color-surface-500)] text-sm">
-              {new Date(meeting.date).toLocaleString()}
-            </span>
-          </div>
-          <p className="text-[var(--color-surface-500)] text-xs mt-2 truncate max-w-lg">
-            {meeting.meeting_url}
-          </p>
-        </div>
+    <div className="detail-root">
 
-        {/* Actions */}
-        <div className="flex gap-2 shrink-0">
-          {meeting.status === 'pending' && (
-            <button
-              onClick={handleStartBot}
-              disabled={actionLoading === 'start-bot'}
-              className="btn-accent flex items-center gap-2 text-sm"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {actionLoading === 'start-bot' ? 'Starting...' : 'Start Bot'}
-            </button>
-          )}
-          {meeting.full_transcript && (
-            <button
-              onClick={handleReprocess}
-              disabled={actionLoading === 'reprocess'}
-              className="btn-secondary flex items-center gap-2 text-sm"
-            >
-              🔄 {actionLoading === 'reprocess' ? 'Processing...' : 'Reprocess'}
-            </button>
-          )}
-          <button onClick={handleDelete} className="btn-secondary text-sm text-[var(--color-danger)] border-[rgba(248,113,113,0.2)] hover:bg-[rgba(248,113,113,0.1)]">
-            🗑
-          </button>
+      {/* ── Back + Header ── */}
+      <div className="detail-header">
+        <button className="back-btn" onClick={() => navigate('/dashboard')}>
+          <BackIcon /> Back
+        </button>
+
+        <div className="detail-title-row">
+          <div className="detail-title-left">
+            <h1 className="detail-title">{meeting.title || 'Untitled Session'}</h1>
+            <div className="detail-meta-row">
+              <span className="detail-status-pill" style={{ color: meta.color, background: meta.bg }}>
+                {isLive && <span className="live-dot" style={{ background: meta.color }} />}
+                {meta.label}
+              </span>
+              <span className="detail-date">
+                <CalIcon /> {new Date(meeting.date).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </span>
+              <span className="detail-url">
+                <LinkIcon /> {meeting.meeting_url?.replace('https://', '')}
+              </span>
+            </div>
+          </div>
+
+          <div className="detail-actions">
+            {meeting.status === 'pending' && (
+              <button className="action-btn action-primary" onClick={handleStartBot} disabled={!!actionLoading}>
+                <PlayIcon />
+                {actionLoading === 'start-bot' ? 'Starting…' : 'Start Bot'}
+              </button>
+            )}
+            {meeting.full_transcript && (
+              <button className="action-btn action-secondary" onClick={handleReprocess} disabled={!!actionLoading}>
+                <RefreshIcon />
+                {actionLoading === 'reprocess' ? 'Processing…' : 'Reprocess'}
+              </button>
+            )}
+            {!deleteConfirm ? (
+              <button className="action-btn action-danger" onClick={() => setDeleteConfirm(true)}>
+                <TrashIcon />
+              </button>
+            ) : (
+              <div className="delete-confirm">
+                <span>Delete?</span>
+                <button className="confirm-yes" onClick={handleDelete}>Yes</button>
+                <button className="confirm-no" onClick={() => setDeleteConfirm(false)}>No</button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Processing indicator */}
-      {['bot_joining', 'in_progress', 'processing'].includes(meeting.status) && (
-        <div className="glass-card p-4 mb-6 flex items-center gap-3 border-[rgba(34,211,238,0.2)] animate-fade-in">
-          <div className="w-3 h-3 rounded-full bg-[var(--color-cyan-glow)] animate-pulse-glow" />
-          <span className="text-[var(--color-cyan-glow)] text-sm font-medium">
-            {meeting.status === 'bot_joining' && 'Bot is joining the meeting...'}
-            {meeting.status === 'in_progress' && 'Recording in progress...'}
-            {meeting.status === 'processing' && 'Processing transcript with AI...'}
-          </span>
-          <span className="text-[var(--color-surface-500)] text-xs ml-auto flex items-center gap-1.5">
-            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-danger)]'}`} />
-            {wsConnected ? 'Live' : 'Reconnecting...'}
-          </span>
+      {/* ── Live indicator bar ── */}
+      {isBusy && (
+        <div className="live-bar">
+          <div className="live-bar-inner">
+            <span className="live-bar-dot" />
+            <span className="live-bar-text">
+              {meeting.status === 'bot_joining'  && 'Bot is joining the meeting…'}
+              {meeting.status === 'in_progress'  && 'Recording in progress — AI analysis running every 3 minutes'}
+              {meeting.status === 'processing'   && 'Processing transcript with AI…'}
+            </span>
+            <span className="live-bar-ws">
+              <span className="ws-dot" style={{ background: wsConnected ? '#00C896' : '#FF6B6B' }} />
+              {wsConnected ? 'Live' : 'Reconnecting…'}
+            </span>
+          </div>
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex gap-1 mb-6 p-1 rounded-xl bg-[var(--color-surface-800)] border border-[rgba(99,102,241,0.08)]">
-        {tabs.map((tab) => (
+      {/* ── Tabs ── */}
+      <div className="detail-tabs">
+        {tabs.map(tab => (
           <button
             key={tab.key}
+            className={`detail-tab ${activeTab === tab.key ? 'active' : ''}`}
             onClick={() => setActiveTab(tab.key)}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all duration-200 ${
-              activeTab === tab.key
-                ? 'bg-gradient-to-r from-[rgba(99,102,241,0.2)] to-[rgba(139,92,246,0.1)] text-white shadow-sm'
-                : 'text-[var(--color-surface-500)] hover:text-white'
-            }`}
           >
-            {tab.icon} {tab.label}
+            <span className="tab-icon">{tab.icon}</span>
+            <span className="tab-label">{tab.label}</span>
+            {tab.pulse && <span className="tab-pulse" />}
           </button>
         ))}
       </div>
 
-      {/* Tab Content */}
-      <div className="animate-fade-in">
+      {/* ── Tab content ── */}
+      <div className="detail-body">
+
+        {/* SUMMARY */}
         {activeTab === 'summary' && (
-          <div className="glass-card p-6">
+          <div className="content-card">
             {meeting.final_summary ? (
-              <div className="prose prose-invert prose-sm max-w-none">
+              <div className="summary-content">
                 {meeting.final_summary.split('\n').map((line, i) => {
-                  if (line.startsWith('## ')) {
-                    return <h2 key={i} className="text-lg font-bold text-white mt-6 mb-3 first:mt-0">{line.replace('## ', '')}</h2>;
-                  }
-                  if (line.startsWith('- **')) {
-                    return <p key={i} className="text-[#e2e8f0] text-sm leading-relaxed pl-4 border-l-2 border-[var(--color-accent-start)] mb-2" dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, '<strong class="text-[var(--color-accent-start)]">$1</strong>') }} />;
-                  }
-                  if (line.startsWith('- ')) {
-                    return <p key={i} className="text-[#e2e8f0] text-sm leading-relaxed ml-4 mb-1">• {line.slice(2)}</p>;
-                  }
-                  if (line.trim() === '') return <br key={i} />;
-                  return <p key={i} className="text-[#cbd5e1] text-sm leading-relaxed mb-2">{line}</p>;
+                  if (line.startsWith('## '))
+                    return <h2 key={i} className="summary-h2">{line.replace('## ', '')}</h2>;
+                  if (line.startsWith('- **'))
+                    return <p key={i} className="summary-accent-line"
+                      dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }} />;
+                  if (line.startsWith('- '))
+                    return <p key={i} className="summary-bullet">· {line.slice(2)}</p>;
+                  if (!line.trim()) return <div key={i} style={{ height: 10 }} />;
+                  return <p key={i} className="summary-para">{line}</p>;
                 })}
               </div>
             ) : (
-              <p className="text-[var(--color-surface-500)] text-sm italic text-center py-8">
-                No summary available yet. Start the bot or reprocess the transcript.
-              </p>
+              <div className="empty-tab">
+                <SummaryIcon />
+                <p>No summary available yet.</p>
+                <span>Start the bot or reprocess the transcript to generate AI analysis.</span>
+              </div>
             )}
           </div>
         )}
 
+        {/* LIVE DASHBOARD */}
+        {activeTab === 'live' && (
+          <LiveDashboard speakers={liveSpeakers} feed={liveFeed} />
+        )}
+
+        {/* TRANSCRIPT */}
         {activeTab === 'transcript' && (
-          <div className="glass-card p-6">
+          <div className="content-card">
             {meeting.full_transcript ? (
-              <pre className="text-[#cbd5e1] text-sm leading-relaxed whitespace-pre-wrap font-[var(--font-family-base)]">
-                {meeting.full_transcript}
-              </pre>
+              <pre className="transcript-pre">{meeting.full_transcript}</pre>
             ) : (
-              <p className="text-[var(--color-surface-500)] text-sm italic text-center py-8">
-                No transcript available yet.
-              </p>
+              <div className="empty-tab">
+                <TranscriptIcon />
+                <p>No transcript yet.</p>
+              </div>
             )}
           </div>
         )}
 
+        {/* ACTION ITEMS */}
         {activeTab === 'actions' && (
-          <div className="glass-card p-6">
+          <div className="content-card">
             <ActionItemList items={meeting.action_items || []} onUpdate={fetchMeeting} />
           </div>
         )}
 
+        {/* CHUNKS */}
         {activeTab === 'chunks' && (
-          <div className="space-y-3">
+          <div className="chunks-list">
             {(meeting.transcript_chunks || []).length === 0 ? (
-              <div className="glass-card p-6">
-                <p className="text-[var(--color-surface-500)] text-sm italic text-center py-4">
-                  No transcript chunks processed yet.
-                </p>
+              <div className="content-card">
+                <div className="empty-tab"><ChunkIcon /><p>No chunks processed yet.</p></div>
               </div>
-            ) : (
-              meeting.transcript_chunks.map((chunk) => (
-                <div key={chunk.id} className="glass-card p-5">
-                  <div className="flex items-center gap-3 mb-3">
-                    <span className="badge badge-processing">Chunk #{chunk.chunk_index + 1}</span>
-                    <span className="text-[var(--color-surface-500)] text-xs">
-                      {chunk.timestamp_start}s — {chunk.timestamp_end}s
-                    </span>
-                  </div>
-                  {chunk.processed_json?.summary && (
-                    <p className="text-[#e2e8f0] text-sm mb-3">{chunk.processed_json.summary}</p>
-                  )}
-                  {chunk.processed_json?.key_decisions?.length > 0 && (
-                    <div className="mb-2">
-                      <span className="text-xs text-[var(--color-warning)] font-semibold uppercase tracking-wider">Decisions:</span>
-                      <ul className="mt-1 space-y-1">
-                        {chunk.processed_json.key_decisions.map((d, i) => (
-                          <li key={i} className="text-sm text-[#cbd5e1] pl-3 border-l border-[var(--color-warning)]">{d}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  <details className="mt-3">
-                    <summary className="text-xs text-[var(--color-surface-500)] cursor-pointer hover:text-white transition-colors">
-                      Show raw text
-                    </summary>
-                    <pre className="mt-2 text-xs text-[#94a3b8] whitespace-pre-wrap font-[var(--font-family-base)] bg-[var(--color-surface-900)] p-3 rounded-lg">
-                      {chunk.raw_text}
-                    </pre>
-                  </details>
+            ) : meeting.transcript_chunks.map(chunk => (
+              <div key={chunk.id} className="chunk-card">
+                <div className="chunk-header">
+                  <span className="chunk-badge">Chunk #{chunk.chunk_index + 1}</span>
+                  <span className="chunk-time">{chunk.timestamp_start}s — {chunk.timestamp_end}s</span>
                 </div>
-              ))
-            )}
+                {chunk.processed_json?.summary && (
+                  <p className="chunk-summary">{chunk.processed_json.summary}</p>
+                )}
+                {chunk.processed_json?.key_decisions?.length > 0 && (
+                  <div className="chunk-decisions">
+                    <span className="chunk-decisions-label">Key Decisions</span>
+                    {chunk.processed_json.key_decisions.map((d, i) => (
+                      <div key={i} className="chunk-decision-item">{d}</div>
+                    ))}
+                  </div>
+                )}
+                <details className="chunk-details">
+                  <summary>Show raw text</summary>
+                  <pre className="chunk-raw">{chunk.raw_text}</pre>
+                </details>
+              </div>
+            ))}
           </div>
         )}
+
       </div>
+
+      {/* ── Inline styles ── */}
+      <style>{`
+        .detail-root {
+          padding: 40px;
+          max-width: 1000px;
+          font-family: var(--font-body);
+        }
+
+        /* Back */
+        .back-btn {
+          display: inline-flex; align-items: center; gap: 6px;
+          color: var(--text-muted); font-size: 13px; font-weight: 400;
+          background: none; border: none; cursor: pointer;
+          margin-bottom: 20px; transition: color 0.2s; padding: 0;
+          font-family: var(--font-body);
+        }
+        .back-btn:hover { color: var(--text-primary); }
+
+        /* Header */
+        .detail-header { margin-bottom: 24px; }
+        .detail-title-row {
+          display: flex; align-items: flex-start;
+          justify-content: space-between; gap: 24px;
+        }
+        .detail-title {
+          font-family: var(--font-display); font-size: 26px;
+          font-weight: 700; color: var(--text-primary);
+          letter-spacing: -0.02em; margin-bottom: 10px; line-height: 1.2;
+        }
+        .detail-meta-row {
+          display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+        }
+        .detail-status-pill {
+          display: inline-flex; align-items: center; gap: 6px;
+          padding: 4px 12px; border-radius: 100px;
+          font-size: 11px; font-weight: 600;
+          letter-spacing: 0.04em; text-transform: uppercase;
+        }
+        .live-dot {
+          width: 6px; height: 6px; border-radius: 50%;
+          animation: pulse-dot 1.2s ease-in-out infinite;
+          flex-shrink: 0;
+        }
+        .detail-date, .detail-url {
+          display: inline-flex; align-items: center; gap: 5px;
+          font-size: 12px; color: var(--text-muted);
+        }
+        .detail-url {
+          max-width: 260px; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap;
+        }
+
+        /* Action buttons */
+        .detail-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .action-btn {
+          display: inline-flex; align-items: center; gap: 7px;
+          padding: 9px 16px; border-radius: var(--radius-md);
+          font-size: 13px; font-weight: 500; cursor: pointer;
+          font-family: var(--font-body); border: 1px solid;
+          transition: all 0.2s; white-space: nowrap;
+        }
+        .action-primary {
+          background: linear-gradient(135deg,#6C63FF,#9B8FFF);
+          border-color: transparent; color: #fff;
+          box-shadow: 0 4px 16px rgba(108,99,255,0.3);
+        }
+        .action-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(108,99,255,0.4); }
+        .action-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .action-secondary {
+          background: var(--bg-raised); border-color: var(--border-subtle);
+          color: var(--text-secondary);
+        }
+        .action-secondary:hover { background: var(--bg-hover); border-color: var(--border-mid); color: var(--text-primary); }
+        .action-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .action-danger {
+          background: rgba(255,107,107,0.08); border-color: rgba(255,107,107,0.2);
+          color: #FF6B6B; padding: 9px 12px;
+        }
+        .action-danger:hover { background: rgba(255,107,107,0.15); }
+        .delete-confirm {
+          display: flex; align-items: center; gap: 6px;
+          background: var(--bg-raised); border: 1px solid rgba(255,107,107,0.3);
+          border-radius: var(--radius-md); padding: 6px 12px; font-size: 12px;
+          color: var(--text-secondary);
+        }
+        .confirm-yes, .confirm-no {
+          padding: 3px 10px; border-radius: 6px; border: none;
+          font-size: 12px; font-weight: 500; cursor: pointer;
+          font-family: var(--font-body);
+        }
+        .confirm-yes { background: rgba(255,107,107,0.2); color: #FF6B6B; }
+        .confirm-no  { background: var(--bg-hover); color: var(--text-muted); }
+
+        /* Live bar */
+        .live-bar {
+          margin-bottom: 24px; border-radius: var(--radius-md);
+          background: rgba(108,99,255,0.06);
+          border: 1px solid rgba(108,99,255,0.15);
+          overflow: hidden;
+        }
+        .live-bar-inner {
+          display: flex; align-items: center; gap: 10px; padding: 12px 18px;
+        }
+        .live-bar-dot {
+          width: 8px; height: 8px; border-radius: 50%;
+          background: #6C63FF; flex-shrink: 0;
+          box-shadow: 0 0 8px #6C63FF;
+          animation: pulse-dot 1.4s ease-in-out infinite;
+        }
+        .live-bar-text { font-size: 13px; color: #9B8FFF; font-weight: 400; flex: 1; }
+        .live-bar-ws {
+          display: flex; align-items: center; gap: 6px;
+          font-size: 11px; color: var(--text-muted);
+        }
+        .ws-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+        /* Tabs */
+        .detail-tabs {
+          display: flex; gap: 2px; margin-bottom: 24px;
+          padding: 4px; background: var(--bg-card);
+          border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+        }
+        .detail-tab {
+          flex: 1; display: flex; align-items: center; justify-content: center;
+          gap: 7px; padding: 10px 14px; border-radius: 10px;
+          border: none; background: transparent; cursor: pointer;
+          font-family: var(--font-body); font-size: 13px; font-weight: 400;
+          color: var(--text-muted); transition: all 0.2s; position: relative;
+          white-space: nowrap;
+        }
+        .detail-tab:hover { color: var(--text-secondary); background: var(--bg-raised); }
+        .detail-tab.active {
+          background: var(--bg-raised); color: var(--text-primary);
+          border: 1px solid var(--border-mid); font-weight: 500;
+        }
+        .tab-icon { display: flex; align-items: center; opacity: 0.7; }
+        .detail-tab.active .tab-icon { opacity: 1; }
+        .tab-pulse {
+          position: absolute; top: 8px; right: 8px;
+          width: 6px; height: 6px; border-radius: 50%; background: #FF6B6B;
+          box-shadow: 0 0 8px #FF6B6B;
+          animation: pulse-dot 1.2s ease-in-out infinite;
+        }
+
+        /* Content card */
+        .content-card {
+          background: var(--bg-card); border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-lg); padding: 28px;
+        }
+
+        /* Summary */
+        .summary-content {}
+        .summary-h2 {
+          font-family: var(--font-display); font-size: 15px; font-weight: 600;
+          color: var(--text-primary); margin: 24px 0 10px;
+          padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle);
+        }
+        .summary-h2:first-child { margin-top: 0; }
+        .summary-accent-line {
+          font-size: 13px; color: var(--text-secondary); line-height: 1.7;
+          padding: 6px 14px; border-left: 2px solid #6C63FF;
+          margin-bottom: 6px; background: rgba(108,99,255,0.04);
+          border-radius: 0 6px 6px 0;
+        }
+        .summary-accent-line strong { color: #9B8FFF; font-weight: 500; }
+        .summary-bullet {
+          font-size: 13px; color: var(--text-secondary); line-height: 1.7;
+          padding-left: 16px; margin-bottom: 4px;
+        }
+        .summary-para {
+          font-size: 13px; color: var(--text-secondary); line-height: 1.8;
+          margin-bottom: 6px;
+        }
+
+        /* Transcript */
+        .transcript-pre {
+          font-family: var(--font-body); font-size: 13px;
+          color: var(--text-secondary); line-height: 1.8;
+          white-space: pre-wrap; word-break: break-word;
+        }
+
+        /* Chunks */
+        .chunks-list { display: flex; flex-direction: column; gap: 10px; }
+        .chunk-card {
+          background: var(--bg-card); border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-lg); padding: 20px 22px;
+        }
+        .chunk-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+        .chunk-badge {
+          font-size: 11px; font-weight: 600; color: #6C63FF;
+          background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.2);
+          padding: 3px 10px; border-radius: 100px; letter-spacing: 0.03em;
+          text-transform: uppercase;
+        }
+        .chunk-time { font-size: 11px; color: var(--text-muted); }
+        .chunk-summary { font-size: 13px; color: var(--text-secondary); line-height: 1.7; margin-bottom: 12px; }
+        .chunk-decisions { margin-bottom: 12px; }
+        .chunk-decisions-label {
+          font-size: 10px; font-weight: 600; color: #FFB800;
+          letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; display: block;
+        }
+        .chunk-decision-item {
+          font-size: 12px; color: var(--text-secondary);
+          padding: 5px 12px; border-left: 2px solid #FFB800;
+          margin-bottom: 4px; background: rgba(255,184,0,0.04);
+          border-radius: 0 6px 6px 0;
+        }
+        .chunk-details summary {
+          font-size: 11px; color: var(--text-muted); cursor: pointer;
+          list-style: none; display: inline-flex; align-items: center; gap: 4px;
+          transition: color 0.2s;
+        }
+        .chunk-details summary:hover { color: var(--text-secondary); }
+        .chunk-raw {
+          margin-top: 10px; font-family: var(--font-body); font-size: 11px;
+          color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
+          background: var(--bg-deep); padding: 14px; border-radius: var(--radius-sm);
+          line-height: 1.7;
+        }
+
+        /* Empty tab */
+        .empty-tab {
+          display: flex; flex-direction: column; align-items: center;
+          justify-content: center; padding: 56px 24px; text-align: center;
+          color: var(--text-muted);
+        }
+        .empty-tab svg { margin-bottom: 14px; opacity: 0.4; }
+        .empty-tab p { font-size: 14px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; }
+        .empty-tab span { font-size: 12px; color: var(--text-muted); max-width: 300px; line-height: 1.6; }
+
+        /* Loading */
+        .detail-loading { padding: 40px; }
+        .detail-not-found { padding: 80px 40px; text-align: center; }
+        .detail-not-found h2 { font-family: var(--font-display); font-size: 20px; color: var(--text-primary); margin-bottom: 20px; }
+
+        @keyframes pulse-dot {
+          0%,100% { opacity:1; transform:scale(1); }
+          50% { opacity:0.5; transform:scale(0.8); }
+        }
+      `}</style>
     </div>
   );
 }
+
+/* ── Icons ── */
+function BackIcon()       { return <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11L5 7l4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
+function CalIcon()        { return <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.3"/><path d="M5 1v4M11 1v4M2 7h12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>; }
+function LinkIcon()       { return <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M7 9a3 3 0 004.243 0l2-2a3 3 0 00-4.243-4.243L8 3.757" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><path d="M9 7a3 3 0 00-4.243 0l-2 2A3 3 0 006.999 13.24L8 12.243" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>; }
+function PlayIcon()       { return <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M5 3l9 5-9 5V3z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/></svg>; }
+function RefreshIcon()    { return <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8a6 6 0 016-6 6 6 0 014.243 1.757L14 5M14 2v3h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
+function TrashIcon()      { return <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M6 4V3h4v1M5 4l.5 9h5l.5-9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
+function SummaryIcon()    { return <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.3"/><path d="M5 6h6M5 8h4M5 10h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>; }
+function LiveIcon()       { return <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.3"/><path d="M3 8a5 5 0 005 5M8 3a5 5 0 015 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>; }
+function TranscriptIcon() { return <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.3"/><path d="M5 5.5h6M5 8h6M5 10.5h4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>; }
+function TaskIcon()       { return <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 8l2.5 2.5L12 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><rect x="1.5" y="1.5" width="13" height="13" rx="2.5" stroke="currentColor" strokeWidth="1.3"/></svg>; }
+function ChunkIcon()      { return <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><rect x="9" y="1" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><rect x="1" y="9" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><rect x="9" y="9" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.3"/></svg>; }

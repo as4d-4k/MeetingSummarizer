@@ -1,0 +1,59 @@
+Keep ngrok running in its own terminal — don't close it. You now need these terminals open simultaneously:
+TerminalCommand1
+ngrok.exe http 8000 ✅ already running
+python manage.py runserver
+celery -A config worker -l info --pool=solo
+celery -A config beat -l info
+npm run dev (in frontend folder)
+
+
+No worries! Just reopen them one by one.
+
+**Open 4 separate PowerShell windows and run one command in each:**
+
+---
+
+**Terminal 1 — ngrok**
+```powershell
+cd "C:\Users\LENOVO\Desktop\nlp project\MeetingSummarizer\backend"
+.\ngrok.exe http 8000
+```
+
+---
+
+**Terminal 2 — Django**
+```powershell
+cd "C:\Users\LENOVO\Desktop\nlp project\MeetingSummarizer\backend"
+venv\Scripts\activate
+python manage.py runserver
+```
+
+---
+
+**Terminal 3 — Celery Worker**
+```powershell
+cd "C:\Users\LENOVO\Desktop\nlp project\MeetingSummarizer\backend"
+venv\Scripts\activate
+celery -A config worker -l info --pool=solo
+```
+
+---
+
+**Terminal 4 — Celery Beat**
+```powershell
+cd "C:\Users\LENOVO\Desktop\nlp project\MeetingSummarizer\backend"
+venv\Scripts\activate
+celery -A config beat -l info
+```
+
+---
+
+**Terminal 5 — Frontend**
+```powershell
+cd "C:\Users\LENOVO\Desktop\nlp project\MeetingSummarizer\frontend"
+npm run dev
+```
+
+---
+
+Start them in order 1 → 5. Once all are running, tell me and we'll test everything!
