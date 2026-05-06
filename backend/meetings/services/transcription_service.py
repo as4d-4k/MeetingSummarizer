@@ -39,14 +39,19 @@ class TranscriptionService:
     # ──────────────────────────────────────────────
     # Mode 1: Transcribe audio file
     # ──────────────────────────────────────────────
-    def transcribe_audio(self, audio_file_path: str) -> str:
+    def transcribe_audio(self, audio_file_path: str, live_language: str = "English") -> str:
         """
-        Transcribe an audio file using the best available provider.
+        Transcribe an audio file using OpenAI Whisper.
 
-        Optimized for Urdu/English code-switched meetings.
+        Handles:
+          - English only
+          - Urdu only (Urdu script)
+          - Urdu-English code-switching (mixed)
+          - Roman Urdu (Urdu words written in Latin script)
 
         Args:
             audio_file_path: Path to the audio file (mp3, mp4, wav, webm, etc.)
+            live_language: The language mode chosen when the meeting was created.
 
         Returns:
             Full transcript text.
@@ -55,28 +60,65 @@ class TranscriptionService:
         if not file_path.exists():
             raise TranscriptionServiceError(f"Audio file not found: {audio_file_path}")
 
-        logger.info("Transcribing audio file: %s (%.1f MB) using OpenAI Whisper",
-                     file_path.name, file_path.stat().st_size / 1e6)
+        logger.info("Transcribing audio file: %s (%.1f MB) | language=%s",
+                     file_path.name, file_path.stat().st_size / 1e6, live_language)
 
-        return self._transcribe_with_whisper(file_path)
+        return self._transcribe_with_whisper(file_path, live_language)
 
-    def _transcribe_with_whisper(self, file_path: Path) -> str:
-        """Transcribe using OpenAI Whisper API."""
+    def _transcribe_with_whisper(self, file_path: Path, live_language: str = "English") -> str:
+        """Transcribe using OpenAI Whisper API with language-aware prompting."""
+
+        # Build a language-specific prompt hint for Whisper
+        prompt_map = {
+            "English": (
+                "This is a meeting in English. "
+                "Transcribe exactly what is said with correct punctuation."
+            ),
+            "Urdu": (
+                "یہ ایک اردو میٹنگ ہے۔ براہ کرم ہر بات کو اردو رسم الخط میں لکھیں۔ "
+                "This meeting is entirely in Urdu. Transcribe in Urdu script."
+            ),
+            "Urdu-English Mix": (
+                "This meeting has speakers who switch between Urdu and English (code-switching). "
+                "Transcribe exactly as spoken: use Urdu script (اردو) for Urdu words and "
+                "Latin script for English words. Do not translate, just transcribe faithfully."
+            ),
+            "Roman Urdu": (
+                "This meeting is in Roman Urdu — Urdu words written in Latin/English letters "
+                "(e.g. 'kya hal hai', 'theek hai', 'budget ki baat karte hain'). "
+                "Transcribe exactly as spoken using Latin script. Do not convert to Urdu script. "
+                "Speakers may also use some English words naturally."
+            ),
+        }
+        whisper_prompt = prompt_map.get(live_language, prompt_map["Urdu-English Mix"])
+
+        # Whisper language hint (ISO 639-1)
+        # KEY INSIGHT: Roman Urdu MUST use "en" hint — if we use "ur" or auto-detect,
+        # Whisper outputs Urdu script (اردو). Forcing "en" makes it phonetically
+        # render Urdu sounds as Latin characters (Roman Urdu).
+        whisper_lang_map = {
+            "English":          "en",
+            "Urdu":             "ur",
+            "Urdu-English Mix": None,   # Auto-detect handles natural code-switching
+            "Roman Urdu":       "en",   # Force Latin script output
+        }
+        whisper_lang = whisper_lang_map.get(live_language)
+
         try:
             from openai import OpenAI
             client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
             with open(file_path, "rb") as audio_file:
-                response = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    prompt=(
-                        "This is a meeting with speakers who mix Urdu and English. "
-                        "Transcribe exactly what is said, preserving both Urdu and English words. "
-                        "Use Urdu script for Urdu words and Latin script for English words."
-                    ),
-                    response_format="text",
-                )
+                kwargs = {
+                    "model": "whisper-1",
+                    "file": audio_file,
+                    "prompt": whisper_prompt,
+                    "response_format": "text",
+                }
+                if whisper_lang:
+                    kwargs["language"] = whisper_lang
+
+                response = client.audio.transcriptions.create(**kwargs)
 
             transcript = response.strip() if isinstance(response, str) else response.text.strip()
             logger.info("Whisper transcription complete: %d characters", len(transcript))

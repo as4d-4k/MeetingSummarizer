@@ -82,6 +82,7 @@ class MeetingConsumer(AsyncJsonWebsocketConsumer):
             speaker_data = []
             for sp in speakers:
                 latest = sp.analyses.first()
+                summary_text = latest.summary if latest else ""
                 speaker_data.append(
                     {
                         "id": sp.id,
@@ -92,7 +93,8 @@ class MeetingConsumer(AsyncJsonWebsocketConsumer):
                         "performance_score": sp.performance_score,
                         "sentiment": sp.sentiment,
                         "last_quote": sp.last_quote,
-                        "summary": latest.summary if latest else "",
+                        "summary": summary_text,
+                        "latest_summary": summary_text,
                         "key_points": latest.key_points if latest else [],
                         "topic_coverage": latest.topic_coverage if latest else {},
                     }
@@ -156,3 +158,6 @@ class MeetingConsumer(AsyncJsonWebsocketConsumer):
 
     async def summary_update(self, event):
         await self.send_json({"type": "summary_update", "data": event["data"]})
+
+    async def transcript_update(self, event):
+        await self.send_json({"type": "transcript_update", "data": event["data"]})

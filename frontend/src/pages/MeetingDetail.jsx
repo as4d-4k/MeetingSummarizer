@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getMeeting, startBot, reprocessMeeting, deleteMeeting, getLiveStatus } from '../api/client';
+import { getMeeting, startBot, endBot, reprocessMeeting, deleteMeeting, getLiveStatus } from '../api/client';
 import ActionItemList from '../components/ActionItemList';
 import LiveDashboard from '../components/LiveDashboard';
 import useWebSocket from '../hooks/useWebSocket';
@@ -25,7 +25,8 @@ export default function MeetingDetail() {
   const [liveFeed, setLiveFeed]       = useState([]);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
 
-  const fetchMeeting = async () => {
+  // Stable fetch — wrapped in useCallback so WS handler can depend on it correctly
+  const fetchMeeting = useCallback(async () => {
     try {
       const { data } = await getMeeting(id);
       setMeeting(data);
@@ -34,29 +35,138 @@ export default function MeetingDetail() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
-  const fetchLiveStatus = async () => {
+  const fetchLiveStatus = useCallback(async () => {
     try {
       const { data } = await getLiveStatus(id);
-      setLiveSpeakers(data.speakers || []);
-      setLiveFeed(data.recent_feed || []);
+      // Merge with existing state — WS events update word_count and latest_summary
+      // in real-time; fetchLiveStatus only initialises the speaker list.
+      setLiveSpeakers(prev => {
+        if (prev.length === 0) {
+          // First load — use DB data directly
+          return data.speakers || [];
+        }
+        // Already have live data — only add NEW speakers from DB, don't overwrite existing
+        const existingIds = new Set(prev.map(s => s.id));
+        const newSpeakers = (data.speakers || []).filter(s => !existingIds.has(s.id));
+        return [...prev, ...newSpeakers];
+      });
+      setLiveFeed(prev => prev.length === 0 ? (data.recent_feed || []) : prev);
     } catch {}
-  };
+  }, [id]);
 
-  useEffect(() => { fetchMeeting(); fetchLiveStatus(); }, [id]);
+  useEffect(() => { fetchMeeting(); fetchLiveStatus(); }, [fetchMeeting, fetchLiveStatus]);
+
+  // Safety polling — updates status every 3s while meeting is active
+  useEffect(() => {
+    if (!meeting) return;
+    const isTransitional = ['pending', 'bot_joining', 'in_progress', 'processing'].includes(meeting.status);
+    if (!isTransitional) return;
+    const poll = setInterval(fetchMeeting, 3000);
+    return () => clearInterval(poll);
+  }, [meeting?.status, fetchMeeting]);
+
+  // Auto-switch to Live tab when the meeting goes live
+  useEffect(() => {
+    if (meeting?.status === 'in_progress' || meeting?.status === 'bot_joining') {
+      setActiveTab(prev => prev === 'summary' ? 'live' : prev);
+    }
+  }, [meeting?.status]);
 
   const handleWsMessage = useCallback((msg) => {
-    if (msg.type === 'status_change') {
-      setMeeting(p => p ? { ...p, status: msg.data.status } : p);
-      if (msg.data.status === 'completed') fetchMeeting();
-    } else if (['summary_update','transcript_chunk','action_item'].includes(msg.type)) {
-      fetchMeeting();
+    if (msg.type === 'snapshot') {
+      // WebSocket sends a full snapshot on connect — hydrate speakers + feed
+      const snap = msg.data;
+      if (snap.speakers && snap.speakers.length > 0) {
+        setLiveSpeakers(prev => {
+          if (prev.length === 0) {
+            // Map 'summary' from snapshot to 'latest_summary' for LiveDashboard
+            return snap.speakers.map(sp => ({
+              ...sp,
+              latest_summary: sp.summary || sp.latest_summary || '',
+            }));
+          }
+          // Merge: update existing speakers with DB data, add new ones
+          const existingIds = new Set(prev.map(s => s.id));
+          const merged = prev.map(s => {
+            const dbSp = snap.speakers.find(d => d.id === s.id);
+            if (!dbSp) return s;
+            return {
+              ...s,
+              // Only update summary-related fields if we don't already have live ones
+              latest_summary: s.latest_summary || dbSp.summary || dbSp.latest_summary || '',
+              performance_score: s.performance_score ?? dbSp.performance_score,
+              sentiment: s.sentiment || dbSp.sentiment,
+              key_points: s.key_points?.length ? s.key_points : (dbSp.key_points || []),
+              topic_coverage: Object.keys(s.topic_coverage || {}).length ? s.topic_coverage : (dbSp.topic_coverage || {}),
+            };
+          });
+          const newSpeakers = snap.speakers.filter(d => !existingIds.has(d.id)).map(sp => ({
+            ...sp, latest_summary: sp.summary || sp.latest_summary || '',
+          }));
+          return [...merged, ...newSpeakers];
+        });
+      }
+      if (snap.recent_feed && snap.recent_feed.length > 0) {
+        setLiveFeed(prev => prev.length === 0 ? snap.recent_feed : prev);
+      }
+
+    } else if (msg.type === 'status_change') {
+      const newStatus = msg.data.status;
+      setMeeting(p => p ? { ...p, status: newStatus } : p);
+      // On completion fetch everything (transcript, summary, chunks all come in)
+      if (newStatus === 'completed') fetchMeeting();
+
+    } else if (msg.type === 'summary_update') {
+      // Directly apply — no reload needed
+      setMeeting(p => p ? { ...p, final_summary: msg.data.summary } : p);
+
+    } else if (msg.type === 'transcript_update') {
+      // Full transcript + title are now available — update directly
+      setMeeting(p => p ? {
+        ...p,
+        full_transcript: msg.data.transcript,
+        ...(msg.data.title ? { title: msg.data.title } : {}),
+      } : p);
+
+    } else if (msg.type === 'transcript_chunk') {
+      // Directly append the new chunk to the meeting state
+      const d = msg.data;
+      setMeeting(p => {
+        if (!p) return p;
+        const existing = p.transcript_chunks || [];
+        const alreadyExists = existing.some(c => c.chunk_index === d.chunk_index);
+        if (alreadyExists) return p;
+        return {
+          ...p,
+          transcript_chunks: [...existing, {
+            id: Date.now(),
+            chunk_index: d.chunk_index,
+            raw_text: d.raw_text || '',
+            processed_json: { summary: d.summary, key_decisions: d.key_decisions || [] },
+            timestamp_start: d.timestamp_start || 0,
+            timestamp_end: d.timestamp_end || 0,
+          }],
+        };
+      });
+
+    } else if (msg.type === 'action_item') {
+      // Directly append the new action item
+      const d = msg.data;
+      setMeeting(p => {
+        if (!p) return p;
+        const existing = p.action_items || [];
+        if (existing.some(a => a.id === d.id)) return p;
+        return { ...p, action_items: [...existing, d] };
+      });
+
     } else if (msg.type === 'speaker_joined') {
       setLiveSpeakers(p => [...p, { id: msg.data.speaker_id, name: msg.data.speaker_name, word_count: 0, talk_time_seconds: 0 }]);
+
     } else if (msg.type === 'transcript_segment') {
       const { speaker_id, speaker_name, text, start_time, end_time, word_count, talk_time_seconds } = msg.data;
-      setLiveFeed(p => [{ speaker_name, text, start_time, end_time }, ...p].slice(0, 50));
+      setLiveFeed(p => [{ speaker_name, text, start_time, end_time, _new: true }, ...p].slice(0, 50));
       setLiveSpeakers(p => {
         const idx = p.findIndex(s => s.id === speaker_id);
         const updated = idx === -1
@@ -64,6 +174,7 @@ export default function MeetingDetail() {
           : p.map((s, i) => i === idx ? { ...s, word_count, talk_time_seconds, is_speaking: true, last_quote: text } : s);
         return updated.map(s => s.id === speaker_id ? s : { ...s, is_speaking: false });
       });
+
     } else if (msg.type === 'analysis_update') {
       const d = msg.data;
       setLiveSpeakers(p => p.map(s => s.id === d.speaker_id ? {
@@ -76,7 +187,7 @@ export default function MeetingDetail() {
         last_quote: d.one_line_quote || s.last_quote,
       } : s));
     }
-  }, [id]);
+  }, [fetchMeeting]);
 
   const { connected: wsConnected } = useWebSocket(id, handleWsMessage);
 
@@ -84,6 +195,13 @@ export default function MeetingDetail() {
     setActionLoading('start-bot');
     try { await startBot(id); fetchMeeting(); }
     catch (err) { alert(err.response?.data?.error || 'Failed to start bot.'); }
+    finally { setActionLoading(''); }
+  };
+
+  const handleEndBot = async () => {
+    setActionLoading('end-bot');
+    try { await endBot(id); fetchMeeting(); }
+    catch (err) { alert(err.response?.data?.error || 'Failed to end bot.'); }
     finally { setActionLoading(''); }
   };
 
@@ -159,6 +277,12 @@ export default function MeetingDetail() {
                 {actionLoading === 'start-bot' ? 'Starting…' : 'Start Bot'}
               </button>
             )}
+            {isLive && (
+              <button className="action-btn action-danger" onClick={handleEndBot} disabled={!!actionLoading}>
+                <TrashIcon />
+                {actionLoading === 'end-bot' ? 'Ending…' : 'End Bot'}
+              </button>
+            )}
             {meeting.full_transcript && (
               <button className="action-btn action-secondary" onClick={handleReprocess} disabled={!!actionLoading}>
                 <RefreshIcon />
@@ -187,7 +311,7 @@ export default function MeetingDetail() {
             <span className="live-bar-dot" />
             <span className="live-bar-text">
               {meeting.status === 'bot_joining'  && 'Bot is joining the meeting…'}
-              {meeting.status === 'in_progress'  && 'Recording in progress — AI analysis running every 3 minutes'}
+              {meeting.status === 'in_progress'  && 'Recording in progress — AI analysis running every 1 minute'}
               {meeting.status === 'processing'   && 'Processing transcript with AI…'}
             </span>
             <span className="live-bar-ws">

@@ -64,6 +64,7 @@ export const getLiveStatus = (id) => client.get(`/meetings/${id}/live-status/`);
 export const createMeeting = (data) => client.post('/meetings/', data);
 export const deleteMeeting = (id) => client.delete(`/meetings/${id}/`);
 export const startBot = (id) => client.post(`/meetings/${id}/start-bot/`);
+export const endBot = (id) => client.post(`/meetings/${id}/end-bot/`);
 export const reprocessMeeting = (id) => client.post(`/meetings/${id}/reprocess/`);
 
 // Action Items

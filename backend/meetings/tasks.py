@@ -27,46 +27,58 @@ logger = logging.getLogger(__name__)
 
 @shared_task
 def flush_speaker_buffers():
+    """
+    Runs every 60 real-world seconds via Celery Beat.
+    For each active meeting, collects speech from the LAST 60 seconds of REAL clock time
+    and sends it to the LLM for cumulative speaker analysis.
+    Uses django timezone.now() for windowing — NOT audio timestamps.
+    """
+    from django.utils import timezone
     from meetings.models import Meeting, Speaker, LiveTranscriptSegment
-    
-    active_meetings = Meeting.objects.filter(status__in=[Meeting.Status.IN_PROGRESS, Meeting.Status.BOT_JOINING])
+
+    now = timezone.now()
+    # 1-minute window: segments received in the last 60 seconds
+    window_start_dt = now - timezone.timedelta(seconds=60)
+
+    active_meetings = Meeting.objects.filter(
+        status__in=[Meeting.Status.IN_PROGRESS, Meeting.Status.BOT_JOINING]
+    )
     total_flushed = 0
 
     for meeting in active_meetings:
         speakers = meeting.speakers.all()
         for speaker in speakers:
-            # Find the last processed end_time for this speaker
-            last_analysis = speaker.analyses.order_by("-window_end").first()
-            last_end = last_analysis.window_end if last_analysis else 0.0
-            
-            # Get segments since last_end
+            # Get segments received in the last 60 real seconds
             segments = LiveTranscriptSegment.objects.filter(
                 meeting=meeting,
                 speaker=speaker,
-                start_time__gte=last_end
+                received_at__gte=window_start_dt,
             ).order_by("start_time")
-            
+
             if not segments.exists():
                 continue
-                
+
             text = " ".join(s.text for s in segments)
             word_count = len(text.split())
-            
+
             if word_count < 5:
                 continue
-                
-            new_end = segments.last().end_time
-            
+
+            # Use real wall-clock unix timestamps for the window label
+            window_start_unix = window_start_dt.timestamp()
+            window_end_unix = now.timestamp()
+
             flush_single_speaker.delay(
                 meeting_id=meeting.id,
                 speaker_id=speaker.id,
                 speaker_name=speaker.name,
                 text=text,
-                window_start=last_end,
-                window_end=new_end
+                window_start=window_start_unix,
+                window_end=window_end_unix,
             )
             total_flushed += 1
 
+    logger.info("flush_speaker_buffers: flushed %d speaker windows", total_flushed)
     return {"flushed": total_flushed}
 
 
@@ -100,6 +112,7 @@ def flush_single_speaker(self, meeting_id: int, speaker_id: int, speaker_name: s
         target_topics = (
             meeting.target_topics if hasattr(meeting, "target_topics") else []
         )
+        live_language = getattr(meeting, "live_language", "English")
 
         # 3. Run Gemini analysis
         llm_svc = LLMService()
@@ -110,6 +123,7 @@ def flush_single_speaker(self, meeting_id: int, speaker_id: int, speaker_name: s
             window_start=window_start,
             window_end=window_end,
             previous_summary=previous_summary,
+            live_language=live_language,
         )
 
         # 4. Save SpeakerAnalysis to DB
@@ -220,11 +234,13 @@ def process_meeting_pipeline(self, meeting_id: int):
 
         llm_svc = LLMService()
         chunk_results = []
+        summary_language = getattr(meeting, "summary_language", "English")
 
         for chunk_data in chunks:
             processed = llm_svc.process_chunk(
                 raw_text=chunk_data["text"],
                 chunk_index=chunk_data["chunk_index"],
+                summary_language=summary_language,
             )
             chunk_results.append(processed)
 
@@ -245,6 +261,10 @@ def process_meeting_pipeline(self, meeting_id: int):
                 {
                     "chunk_index": chunk_data["chunk_index"],
                     "summary": processed.get("summary", ""),
+                    "key_decisions": processed.get("key_decisions", []),
+                    "raw_text": chunk_data["text"],
+                    "timestamp_start": chunk_data["start"],
+                    "timestamp_end": chunk_data["end"],
                 },
             )
 
@@ -266,7 +286,7 @@ def process_meeting_pipeline(self, meeting_id: int):
                     },
                 )
 
-        final_output = llm_svc.generate_final_summary(chunk_results)
+        final_output = llm_svc.generate_final_summary(chunk_results, summary_language=summary_language)
 
         summary_parts = []
         if final_output.get("title"):
@@ -297,6 +317,9 @@ def process_meeting_pipeline(self, meeting_id: int):
         meeting.save(update_fields=["title", "final_summary", "status"])
         broadcast_to_meeting(
             meeting_id, "summary_update", {"summary": meeting.final_summary}
+        )
+        broadcast_to_meeting(
+            meeting_id, "transcript_update", {"transcript": meeting.full_transcript, "title": meeting.title}
         )
         broadcast_to_meeting(meeting_id, "status_change", {"status": "completed"})
 
@@ -541,7 +564,10 @@ def _fetch_transcript(meeting) -> str:
         else:
             logger.info("Using existing recording file: %s", output_path)
 
-        transcript = transcription_svc.transcribe_audio(output_path)
+        transcript = transcription_svc.transcribe_audio(
+            output_path,
+            live_language=getattr(meeting, "live_language", "English")
+        )
         if transcript:
             try:
                 os.remove(output_path)
@@ -597,7 +623,11 @@ def process_live_chunks():
         raw_text = " ".join(f"[{s.speaker.name if s.speaker else 'Unknown'}]: {s.text}" for s in segments)
         
         try:
-            processed = llm_svc.process_chunk(raw_text=raw_text, chunk_index=next_chunk_index)
+            processed = llm_svc.process_chunk(
+                raw_text=raw_text,
+                chunk_index=next_chunk_index,
+                summary_language=getattr(meeting, "summary_language", "English"),
+            )
             
             chunk, _ = TranscriptChunk.objects.update_or_create(
                 meeting=meeting,

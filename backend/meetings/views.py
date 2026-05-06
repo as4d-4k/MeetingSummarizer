@@ -73,9 +73,11 @@ class MeetingViewSet(viewsets.ModelViewSet):
 
         try:
             recall_svc = RecallService()
+            live_language = getattr(meeting, 'live_language', 'English')
             bot_data = recall_svc.create_bot(
                 meeting_url=meeting.meeting_url,
                 bot_name="MeetingIntel Bot",
+                live_language=live_language,
             )
             meeting.bot_id = bot_data.get("id", "")
             meeting.status = Meeting.Status.BOT_JOINING
@@ -114,6 +116,24 @@ class MeetingViewSet(viewsets.ModelViewSet):
         process_meeting_pipeline.delay(meeting.id)
 
         return Response({"message": "Reprocessing started.", "status": meeting.status})
+
+    @action(detail=True, methods=["post"], url_path="end-bot")
+    def end_bot(self, request, pk=None):
+        from .services import RecallService, RecallServiceError
+        meeting = self.get_object()
+
+        if not meeting.bot_id:
+            return Response({"error": "No bot associated with this meeting."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if meeting.status not in [Meeting.Status.BOT_JOINING, Meeting.Status.IN_PROGRESS]:
+            return Response({"error": f"Cannot end bot in status: {meeting.get_status_display()}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            recall_svc = RecallService()
+            recall_svc.leave_bot(meeting.bot_id)
+            return Response({"message": "Bot is leaving the meeting."}, status=status.HTTP_200_OK)
+        except RecallServiceError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
     # ── NEW: Get current live speaker stats ──────────────────────────────────
     @action(detail=True, methods=["get"], url_path="live-status")
@@ -423,4 +443,32 @@ def recall_transcript_webhook(request):
         },
     )
 
+    return Response({"status": "ok"})
+
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def internal_broadcast_view(request):
+    """
+    Called by Celery to bounce a WebSocket message through the Django server.
+    Because InMemoryChannelLayer cannot be accessed from a separate Celery process,
+    Celery makes a POST to this endpoint, and Django (which owns the WebSockets) broadcasts it.
+    """
+    meeting_id = request.data.get("meeting_id")
+    event_type = request.data.get("event_type")
+    data = request.data.get("data")
+
+    if not meeting_id or not event_type:
+        return Response({"error": "missing meeting_id or event_type"}, status=400)
+
+    logger.info(
+        "internal_broadcast_view: meeting=%s type=%s",
+        meeting_id, event_type,
+    )
+
+    from meetings.broadcast import broadcast_to_meeting_direct
+    broadcast_to_meeting_direct(meeting_id, event_type, data or {})
     return Response({"status": "ok"})

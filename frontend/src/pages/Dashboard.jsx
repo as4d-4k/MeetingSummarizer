@@ -2,13 +2,21 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getMeetings } from '../api/client';
 import NewMeetingModal from '../components/NewMeetingModal';
+import { useAuth } from '../context/AuthContext';
 
 export default function Dashboard() {
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [hoveredId, setHoveredId] = useState(null);
+  const [filterStatus, setFilterStatus] = useState('all');
+  const { logout } = useAuth();
   const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
 
   const fetchMeetings = async () => {
     try {
@@ -21,7 +29,13 @@ export default function Dashboard() {
     }
   };
 
-  useEffect(() => { fetchMeetings(); }, []);
+  useEffect(() => {
+    fetchMeetings();
+    const interval = setInterval(() => {
+      fetchMeetings();
+    }, 10000); // Poll every 10s for live updates on the dashboard
+    return () => clearInterval(interval);
+  }, []);
 
   const handleMeetingCreated = () => { setShowModal(false); fetchMeetings(); };
 
@@ -100,6 +114,9 @@ export default function Dashboard() {
               <PlusIcon />
               New Meeting
             </button>
+            <button className="logout-btn" onClick={handleLogout} title="Log out">
+              <LogoutIcon />
+            </button>
           </div>
         </header>
 
@@ -140,9 +157,10 @@ export default function Dashboard() {
               <span className="section-count">{meetings.length}</span>
             </div>
             <div className="section-filters">
-              <button className="filter-btn active">All</button>
-              <button className="filter-btn">Live</button>
-              <button className="filter-btn">Completed</button>
+              <button className={`filter-btn ${filterStatus === 'all' ? 'active' : ''}`} onClick={() => setFilterStatus('all')}>All</button>
+              <button className={`filter-btn ${filterStatus === 'live' ? 'active' : ''}`} onClick={() => setFilterStatus('live')}>Live</button>
+              <button className={`filter-btn ${filterStatus === 'pending' ? 'active' : ''}`} onClick={() => setFilterStatus('pending')}>Pending</button>
+              <button className={`filter-btn ${filterStatus === 'completed' ? 'active' : ''}`} onClick={() => setFilterStatus('completed')}>Completed</button>
             </div>
           </div>
 
@@ -165,7 +183,12 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="meetings-list">
-              {meetings.map((m, i) => {
+              {meetings.filter(m => {
+                if (filterStatus === 'live') return ['in_progress', 'bot_joining'].includes(m.status);
+                if (filterStatus === 'pending') return m.status === 'pending';
+                if (filterStatus === 'completed') return m.status === 'completed';
+                return true;
+              }).map((m, i) => {
                 const isLive = ['in_progress', 'bot_joining'].includes(m.status);
                 const isProcessing = m.status === 'processing';
                 const platColor = getPlatformColor(m.meeting_url);
@@ -294,6 +317,15 @@ function ArrowIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
       <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function LogoutIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+      <polyline points="16 17 21 12 16 7"></polyline>
+      <line x1="21" y1="12" x2="9" y2="12"></line>
     </svg>
   );
 }

@@ -33,8 +33,29 @@ class RecallService:
     # ──────────────────────────────────────────────
     # Create Bot
     # ──────────────────────────────────────────────
-    def create_bot(self, meeting_url: str, bot_name: str = "MeetingIntel Bot") -> dict:
+    def create_bot(self, meeting_url: str, bot_name: str = "MeetingIntel Bot", live_language: str = "English") -> dict:
         webhook_base = self._get_webhook_base()
+
+        # Build Gladia language config based on chosen live_language
+        # KEY INSIGHT: To get Roman Urdu (Latin script output), we must NOT include "ur"
+        # because including "ur" forces Gladia to output Urdu script (اردو).
+        # Using English-only forces phonetic Latin transcription of Urdu sounds.
+        language_map = {
+            "English":          {"languages": ["en"],       "code_switching": False},
+            "Urdu":             {"languages": ["ur"],       "code_switching": False},
+            "Urdu-English Mix": {"languages": ["ur", "en"], "code_switching": True},
+            "Roman Urdu":       {"languages": ["en"],       "code_switching": False},  # English-only → Latin script
+        }
+        lang_cfg = language_map.get(live_language, {"languages": ["ur", "en"], "code_switching": True})
+
+        gladia_lang_config = {
+            "languages": lang_cfg["languages"],
+        }
+        if lang_cfg["code_switching"]:
+            gladia_lang_config["code_switching"] = True
+
+        logger.info("Creating bot for %s | live_language=%s → Gladia=%s", meeting_url, live_language, gladia_lang_config)
+
         payload = {
             "meeting_url": meeting_url,
             "bot_name": bot_name,
@@ -42,9 +63,7 @@ class RecallService:
                 "transcript": {
                     "provider": {
                         "gladia_v2_streaming": {
-                            "language_config": {
-                                "languages": ["ur", "en"]
-                            }
+                            "language_config": gladia_lang_config
                         }
                     }
                 },
@@ -59,7 +78,6 @@ class RecallService:
         }
 
         url = f"{RECALL_API_BASE}/bot/"
-        logger.info("Creating bot for %s", meeting_url)
 
         try:
             response = requests.post(
@@ -184,6 +202,20 @@ class RecallService:
             return output_path
         except requests.exceptions.RequestException as exc:
             raise RecallServiceError(f"Failed to download recording: {exc}") from exc
+
+    # ──────────────────────────────────────────────
+    # Leave Bot
+    # ──────────────────────────────────────────────
+    def leave_bot(self, bot_id: str) -> dict:
+        url = f"{RECALL_API_BASE}/bot/{bot_id}/leave_call/"
+        logger.info("Sending leave_call for bot %s", bot_id)
+
+        try:
+            response = requests.post(url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as exc:
+            raise RecallServiceError(f"Failed to make bot leave: {exc}") from exc
 
     # ──────────────────────────────────────────────
     # Helpers

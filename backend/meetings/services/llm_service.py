@@ -129,6 +129,7 @@ class LLMService:
         window_start: float,
         window_end: float,
         previous_summary: str = "",
+        live_language: str = "English",
     ) -> dict:
         """
         Analyse a single speaker's 1-minute transcript window during a LIVE meeting.
@@ -175,8 +176,12 @@ class LLMService:
                         "  negative → complaints, blockers, frustration, disagreement\n\n"
                         "IMPORTANT: The 'summary' field MUST be a CUMULATIVE summary of what the speaker has said so far. "
                         "Merge the 'Previous Summary' with the new points from this window. Keep it concise (max 2 clear lines). "
-                        "If the text contains Urdu or Roman Urdu, translate it to English "
-                        "FIRST in 'english_translation', then analyse the translated content.\n\n"
+                        "OUTPUT LANGUAGE RULE — STRICTLY FOLLOW THIS: "
+                        "If TARGET LANGUAGE is 'Roman Urdu': write ALL output in Roman Urdu (Latin script only). "
+                        "Roman Urdu means Urdu words spelled in English/Latin letters (e.g. 'ap ka kya khayal hai', 'theek hai', 'budget discuss karna hai'). "
+                        "NEVER use Urdu script (اردو) when Roman Urdu is selected — every character must be Latin. "
+                        "For all other languages, translate and output in the TARGET LANGUAGE: {live_language}. "
+                        "ALL text outputs (summary, key_points, one_line_quote) MUST follow the above rule.\n\n"
                         "Return ONLY valid JSON. No markdown. No explanation.\n\n"
                         "{format_instructions}"
                     ),
@@ -212,6 +217,7 @@ class LLMService:
                         "speaker_name": speaker_name,
                         "window_label": window_label,
                         "topics": topics_str,
+                        "live_language": live_language,
                         "previous_summary": previous_summary or "None",
                         "transcript": transcript_text,
                         "format_instructions": parser.get_format_instructions(),
@@ -240,7 +246,7 @@ class LLMService:
     # ──────────────────────────────────────────────
     # Original: Process a single transcript chunk (post-meeting)
     # ──────────────────────────────────────────────
-    def process_chunk(self, raw_text: str, chunk_index: int = 0) -> dict:
+    def process_chunk(self, raw_text: str, chunk_index: int = 0, summary_language: str = "English") -> dict:
         parser = JsonOutputParser(pydantic_object=ChunkProcessingOutput)
 
         prompt = ChatPromptTemplate.from_messages(
@@ -251,12 +257,16 @@ class LLMService:
                         "You are an expert multilingual meeting analyst. You specialize in "
                         "processing meeting transcripts that contain a mix of Urdu and English "
                         "(code-switching). Your job is to:\n"
-                        "1. Translate ALL content into professional English\n"
+                        "1. Translate ALL content into the requested language: {summary_language}\n"
                         "2. Summarize the key points discussed\n"
                         "3. Extract any action items with assignees\n"
                         "4. Identify speakers by name or role\n"
                         "5. Note any key decisions made\n\n"
-                        "If the text is already in English, still process it fully.\n"
+                        "CRITICAL OUTPUT RULE: "
+                        "If {summary_language} is 'Roman Urdu', write EVERYTHING in Roman Urdu — "
+                        "Urdu words spelled with Latin/English letters (e.g. 'theek hai', 'budget ki baat'). "
+                        "NEVER output Urdu script (اردو) when Roman Urdu is selected. "
+                        "ALL text outputs (summary, action items, decisions) MUST be in: {summary_language}.\n"
                         "{format_instructions}"
                     ),
                 ),
@@ -275,6 +285,7 @@ class LLMService:
                     {
                         "transcript": raw_text,
                         "chunk_index": chunk_index,
+                        "summary_language": summary_language,
                         "format_instructions": parser.get_format_instructions(),
                     }
                 )
@@ -290,7 +301,7 @@ class LLMService:
     # ──────────────────────────────────────────────
     # Original: Generate final summary (post-meeting)
     # ──────────────────────────────────────────────
-    def generate_final_summary(self, chunk_summaries: list[dict]) -> dict:
+    def generate_final_summary(self, chunk_summaries: list[dict], summary_language: str = "English") -> dict:
         parser = JsonOutputParser(pydantic_object=FinalSummaryOutput)
 
         chunks_context = ""
@@ -315,7 +326,11 @@ class LLMService:
                         "You are an expert meeting analyst. Generate a comprehensive final meeting summary.\n"
                         "Requirements: concise title, professional executive summary (3-5 sentences), "
                         "main topics, detailed summary, and consolidated deduplicated action items.\n"
-                        "All output in professional English.\n{format_instructions}"
+                        "CRITICAL OUTPUT RULE: "
+                        "If {summary_language} is 'Roman Urdu', write ALL output in Roman Urdu — "
+                        "Urdu words spelled in Latin/English letters ONLY (e.g. 'theek hai', 'budget ki baat', 'meeting khatam'). "
+                        "NEVER use Urdu script characters (ا ب پ ت etc.) when Roman Urdu is selected. "
+                        "ALL output MUST be in this language: {summary_language}.\n{format_instructions}"
                     ),
                 ),
                 (
@@ -332,6 +347,7 @@ class LLMService:
                 return chain.invoke(
                     {
                         "chunks_context": chunks_context,
+                        "summary_language": summary_language,
                         "format_instructions": parser.get_format_instructions(),
                     }
                 )
@@ -348,6 +364,12 @@ class LLMService:
 
 
 def _fmt_time(seconds: float) -> str:
+    """Format a timestamp. If it looks like a unix timestamp (> 1e9), show local clock time."""
+    import datetime
+    if seconds > 1_000_000_000:
+        # Unix timestamp — convert to local wall-clock time
+        return datetime.datetime.fromtimestamp(seconds).strftime("%H:%M:%S")
+    # Audio-relative seconds — show as mm:ss
     m, s = divmod(int(seconds), 60)
     return f"{m:02d}:{s:02d}"
 

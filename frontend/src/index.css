@@ -225,6 +225,27 @@ body {
 
 .new-meeting-btn:active { transform: translateY(0); }
 
+/* Logout button */
+.logout-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.logout-btn:hover {
+  color: #FF6B6B;
+  border-color: rgba(255,107,107,0.3);
+  background: rgba(255,107,107,0.05);
+}
+
 /* ═══════════════════════════════════════════
    WELCOME STRIP
 ═══════════════════════════════════════════ */

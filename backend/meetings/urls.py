@@ -14,5 +14,6 @@ router.register(r"", views.MeetingViewSet, basename="meeting")
 router.register(r"action-items", views.ActionItemViewSet, basename="action-item")
 
 urlpatterns = [
+    path("internal_broadcast/", views.internal_broadcast_view, name="internal_broadcast"),
     path("", include(router.urls)),
 ]

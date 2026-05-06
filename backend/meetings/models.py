@@ -44,6 +44,11 @@ class Meeting(models.Model):
     full_transcript = models.TextField("Full Transcript", blank=True, default="")
     final_summary = models.TextField("Final Summary", blank=True, default="")
 
+    # Customization Settings
+    target_topics = models.JSONField("Target Topics", default=list, blank=True)
+    live_language = models.CharField("Live Language", max_length=50, default="English")
+    summary_language = models.CharField("Summary Language", max_length=50, default="English")
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
