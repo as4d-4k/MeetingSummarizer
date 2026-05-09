@@ -3,7 +3,20 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function Register() {
-  const [form, setForm] = useState({ email: '', username: '', password: '', passwordConfirm: '' });
+  const [step, setStep] = useState(1);
+  const [form, setForm] = useState({ 
+    fullName: '', 
+    email: '', 
+    password: '', 
+    passwordConfirm: '',
+    companyName: '',
+    companySize: '1-10',
+    industry: 'Technology',
+    country: 'Pakistan',
+    primaryLanguage: 'Urdu',
+    secondaryLanguage: 'English',
+    meetingPlatform: 'Google Meet',
+  });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { register } = useAuth();
@@ -11,18 +24,55 @@ export default function Register() {
 
   const update = (field) => (e) => setForm({ ...form, [field]: e.target.value });
 
+  const handleNext = (e) => {
+    e.preventDefault();
+    if (step === 1) {
+      if (form.password !== form.passwordConfirm) {
+        setError('Passwords do not match.');
+        return;
+      }
+      if (!form.fullName || !form.email || !form.password) {
+        setError('Please fill in all basic info fields.');
+        return;
+      }
+    }
+    if (step === 2) {
+      if (!form.companyName) {
+        setError('Please provide a company name.');
+        return;
+      }
+    }
+    setError('');
+    setStep(step + 1);
+  };
+
+  const handleBack = () => {
+    setError('');
+    setStep(step - 1);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
-    if (form.password !== form.passwordConfirm) {
-      setError('Passwords do not match.');
-      return;
-    }
-
     setLoading(true);
     try {
-      await register(form.email, form.username, form.password, form.passwordConfirm);
+      // Backend expects username, so we format full name
+      const username = form.fullName.replace(/\s+/g, '').toLowerCase() || 'user' + Math.floor(Math.random()*1000);
+      await register(form.email, username, form.password, form.passwordConfirm);
+      
+      // Save extra info in localStorage so it can be shown on Admin page
+      localStorage.setItem('user_extra_info', JSON.stringify({
+        fullName: form.fullName,
+        companyName: form.companyName,
+        companySize: form.companySize,
+        industry: form.industry,
+        country: form.country,
+        primaryLanguage: form.primaryLanguage,
+        secondaryLanguage: form.secondaryLanguage,
+        meetingPlatform: form.meetingPlatform,
+      }));
+
       navigate('/login', { state: { registered: true } });
     } catch (err) {
       const data = err.response?.data;
@@ -42,7 +92,7 @@ export default function Register() {
       <div className="orb orb-3" />
       <div className="noise-overlay" />
 
-      <div className="auth-container" style={{ maxWidth: '420px' }}>
+      <div className="auth-container" style={{ maxWidth: '460px' }}>
 
         {/* Logo */}
         <div className="auth-logo-wrap">
@@ -57,59 +107,173 @@ export default function Register() {
 
         {/* Card */}
         <div className="auth-card">
-          <div className="auth-card-header">
-            <h2 className="auth-title">Create Account</h2>
-            <p className="auth-subtitle">Start summarizing your meetings</p>
+          <div className="auth-card-header" style={{ position: 'relative' }}>
+            <h2 className="auth-title">
+              {step === 1 && 'Create Account'}
+              {step === 2 && 'Company Info'}
+              {step === 3 && 'Preferences'}
+            </h2>
+            <p className="auth-subtitle">
+              {step === 1 && 'Step 1 of 3: Basic Info'}
+              {step === 2 && 'Step 2 of 3: Tell us about your company'}
+              {step === 3 && 'Step 3 of 3: Language & Meeting Preferences'}
+            </p>
+            {/* Progress indicators */}
+            <div className="step-indicators">
+              <div className={`step-dot ${step >= 1 ? 'active' : ''}`} />
+              <div className={`step-dot ${step >= 2 ? 'active' : ''}`} />
+              <div className={`step-dot ${step >= 3 ? 'active' : ''}`} />
+            </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="auth-form">
-            <div className="auth-field">
-              <label className="auth-label">Email address</label>
-              <input
-                type="email"
-                value={form.email}
-                onChange={update('email')}
-                placeholder="you@company.com"
-                className="auth-input"
-                required
-              />
-            </div>
+          <form onSubmit={step === 3 ? handleSubmit : handleNext} className="auth-form">
+            
+            {/* STEP 1: Basic Info */}
+            {step === 1 && (
+              <div className="step-content">
+                <div className="auth-field">
+                  <label className="auth-label">Full Name</label>
+                  <input
+                    type="text"
+                    value={form.fullName}
+                    onChange={update('fullName')}
+                    placeholder="Muhammad Umer"
+                    className="auth-input"
+                    required
+                  />
+                </div>
+                <div className="auth-field">
+                  <label className="auth-label">Email address</label>
+                  <input
+                    type="email"
+                    value={form.email}
+                    onChange={update('email')}
+                    placeholder="you@company.com"
+                    className="auth-input"
+                    required
+                  />
+                </div>
+                <div className="auth-field">
+                  <label className="auth-label">Password</label>
+                  <input
+                    type="password"
+                    value={form.password}
+                    onChange={update('password')}
+                    placeholder="••••••••"
+                    className="auth-input"
+                    required
+                  />
+                </div>
+                <div className="auth-field">
+                  <label className="auth-label">Confirm Password</label>
+                  <input
+                    type="password"
+                    value={form.passwordConfirm}
+                    onChange={update('passwordConfirm')}
+                    placeholder="••••••••"
+                    className="auth-input"
+                    required
+                  />
+                </div>
+              </div>
+            )}
 
-            <div className="auth-field">
-              <label className="auth-label">Username</label>
-              <input
-                type="text"
-                value={form.username}
-                onChange={update('username')}
-                placeholder="johndoe"
-                className="auth-input"
-                required
-              />
-            </div>
+            {/* STEP 2: Company Info */}
+            {step === 2 && (
+              <div className="step-content">
+                <div className="auth-field">
+                  <label className="auth-label">Company Name</label>
+                  <input
+                    type="text"
+                    value={form.companyName}
+                    onChange={update('companyName')}
+                    placeholder="TechCorp Pvt Ltd"
+                    className="auth-input"
+                    required
+                  />
+                </div>
+                <div className="auth-field">
+                  <label className="auth-label">Company Size</label>
+                  <div className="auth-select-wrapper">
+                    <select className="auth-input auth-select" value={form.companySize} onChange={update('companySize')}>
+                      <option value="1-10">1-10</option>
+                      <option value="11-50">11-50</option>
+                      <option value="51-200">51-200</option>
+                      <option value="200+">200+</option>
+                    </select>
+                    <ChevronIcon />
+                  </div>
+                </div>
+                <div className="auth-field">
+                  <label className="auth-label">Industry</label>
+                  <div className="auth-select-wrapper">
+                    <select className="auth-input auth-select" value={form.industry} onChange={update('industry')}>
+                      <option value="Technology">Technology</option>
+                      <option value="Finance">Finance</option>
+                      <option value="Healthcare">Healthcare</option>
+                      <option value="Education">Education</option>
+                      <option value="Other">Other</option>
+                    </select>
+                    <ChevronIcon />
+                  </div>
+                </div>
+                <div className="auth-field">
+                  <label className="auth-label">Country</label>
+                  <div className="auth-select-wrapper">
+                    <select className="auth-input auth-select" value={form.country} onChange={update('country')}>
+                      <option value="Pakistan">Pakistan</option>
+                      <option value="United States">United States</option>
+                      <option value="United Kingdom">United Kingdom</option>
+                      <option value="India">India</option>
+                      <option value="Other">Other</option>
+                    </select>
+                    <ChevronIcon />
+                  </div>
+                </div>
+              </div>
+            )}
 
-            <div className="auth-field">
-              <label className="auth-label">Password</label>
-              <input
-                type="password"
-                value={form.password}
-                onChange={update('password')}
-                placeholder="••••••••"
-                className="auth-input"
-                required
-              />
-            </div>
-
-            <div className="auth-field">
-              <label className="auth-label">Confirm Password</label>
-              <input
-                type="password"
-                value={form.passwordConfirm}
-                onChange={update('passwordConfirm')}
-                placeholder="••••••••"
-                className="auth-input"
-                required
-              />
-            </div>
+            {/* STEP 3: Language & Preferences */}
+            {step === 3 && (
+              <div className="step-content">
+                <div className="auth-field">
+                  <label className="auth-label">Primary Language</label>
+                  <div className="auth-select-wrapper">
+                    <select className="auth-input auth-select" value={form.primaryLanguage} onChange={update('primaryLanguage')}>
+                      <option value="Urdu">Urdu</option>
+                      <option value="English">English</option>
+                      <option value="Arabic">Arabic</option>
+                      <option value="Spanish">Spanish</option>
+                    </select>
+                    <ChevronIcon />
+                  </div>
+                </div>
+                <div className="auth-field">
+                  <label className="auth-label">Secondary Language</label>
+                  <div className="auth-select-wrapper">
+                    <select className="auth-input auth-select" value={form.secondaryLanguage} onChange={update('secondaryLanguage')}>
+                      <option value="English">English</option>
+                      <option value="Urdu">Urdu</option>
+                      <option value="Arabic">Arabic</option>
+                      <option value="Spanish">Spanish</option>
+                    </select>
+                    <ChevronIcon />
+                  </div>
+                </div>
+                <div className="auth-field">
+                  <label className="auth-label">Meeting Platform</label>
+                  <div className="auth-select-wrapper">
+                    <select className="auth-input auth-select" value={form.meetingPlatform} onChange={update('meetingPlatform')}>
+                      <option value="Google Meet">Google Meet</option>
+                      <option value="Zoom">Zoom</option>
+                      <option value="Microsoft Teams">Microsoft Teams</option>
+                      <option value="All platforms">All platforms</option>
+                    </select>
+                    <ChevronIcon />
+                  </div>
+                </div>
+              </div>
+            )}
 
             {error && (
               <div className="auth-error">
@@ -118,19 +282,33 @@ export default function Register() {
               </div>
             )}
 
-            <button type="submit" disabled={loading} className="auth-submit">
-              {loading ? (
-                <>
-                  <span className="auth-spinner" />
-                  Creating account…
-                </>
-              ) : (
-                <>
-                  <SignInIcon />
-                  Create Account
-                </>
+            <div className="auth-actions">
+              {step > 1 && (
+                <button type="button" onClick={handleBack} className="auth-btn-secondary">
+                  Back
+                </button>
               )}
-            </button>
+              
+              {step < 3 ? (
+                <button type="submit" className="auth-submit" style={{ flex: 1 }}>
+                  Next Step
+                </button>
+              ) : (
+                <button type="submit" disabled={loading} className="auth-submit" style={{ flex: 1 }}>
+                  {loading ? (
+                    <>
+                      <span className="auth-spinner" />
+                      Creating account…
+                    </>
+                  ) : (
+                    <>
+                      <SignInIcon />
+                      Complete Signup
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           </form>
 
           <div className="auth-footer">
@@ -172,7 +350,7 @@ export default function Register() {
         /* Container */
         .auth-container {
           position: relative; z-index: 1;
-          width: 100%; max-width: 400px;
+          width: 100%;
           display: flex; flex-direction: column; align-items: center; gap: 28px;
           animation: fadeSlideUp 0.5s ease both;
         }
@@ -221,8 +399,29 @@ export default function Register() {
         }
         .auth-subtitle { font-size: 13px; color: var(--text-muted); }
 
+        .step-indicators {
+          position: absolute; right: 0; top: 0;
+          display: flex; gap: 6px;
+        }
+        .step-dot {
+          width: 8px; height: 8px; border-radius: 50%;
+          background: var(--bg-surface);
+          border: 1px solid var(--border-subtle);
+          transition: all 0.3s;
+        }
+        .step-dot.active {
+          background: #6C63FF;
+          border-color: #6C63FF;
+          box-shadow: 0 0 8px rgba(108,99,255,0.5);
+        }
+
         /* Form */
         .auth-form { display: flex; flex-direction: column; gap: 18px; }
+        .step-content {
+          display: flex; flex-direction: column; gap: 18px;
+          animation: fade 0.3s ease;
+        }
+        @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 
         .auth-field { display: flex; flex-direction: column; gap: 7px; }
 
@@ -248,6 +447,18 @@ export default function Register() {
           background: var(--bg-surface);
         }
 
+        .auth-select-wrapper {
+          position: relative;
+        }
+        .auth-select {
+          appearance: none; cursor: pointer;
+        }
+        .auth-select-wrapper svg {
+          position: absolute; right: 14px; top: 50%;
+          transform: translateY(-50%);
+          pointer-events: none; color: var(--text-muted);
+        }
+
         /* Error */
         .auth-error {
           display: flex; align-items: center; gap: 8px;
@@ -257,14 +468,31 @@ export default function Register() {
           border-radius: var(--radius-md); padding: 10px 14px;
         }
 
+        /* Actions */
+        .auth-actions {
+          display: flex; gap: 12px; margin-top: 4px;
+        }
+
+        .auth-btn-secondary {
+          padding: 12px 20px;
+          background: var(--bg-surface);
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-md); color: var(--text-primary);
+          font-family: var(--font-body); font-size: 14px; font-weight: 500;
+          cursor: pointer; transition: all 0.2s;
+        }
+        .auth-btn-secondary:hover {
+          background: rgba(255,255,255,0.05);
+        }
+
         /* Submit */
         .auth-submit {
           display: flex; align-items: center; justify-content: center; gap: 8px;
-          width: 100%; padding: 12px;
+          padding: 12px;
           background: linear-gradient(135deg, #6C63FF, #9B8FFF);
           border: none; border-radius: var(--radius-md); color: #fff;
           font-family: var(--font-body); font-size: 14px; font-weight: 500;
-          cursor: pointer; margin-top: 4px;
+          cursor: pointer;
           box-shadow: 0 4px 20px rgba(108,99,255,0.35);
           transition: all 0.2s;
         }
@@ -329,6 +557,13 @@ function ErrorIcon() {
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{flexShrink:0}}>
       <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.3"/>
       <path d="M8 5v3M8 10.5v.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  );
+}
+function ChevronIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9"></polyline>
     </svg>
   );
 }
