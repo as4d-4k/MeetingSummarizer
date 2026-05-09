@@ -498,13 +498,23 @@ def poll_bot_status(meeting_id: int):
                     meeting.status = Meeting.Status.IN_PROGRESS
                     meeting.save(update_fields=["status"])
                     buffer_manager.activate_meeting(meeting_id)
-                    broadcast_to_meeting(
-                        meeting_id, "status_change", {"status": "in_progress"}
-                    )
-                    # ── NEW: start polling live transcript ──
-                    poll_live_transcript.apply_async(
-                        args=[meeting_id, meeting.bot_id, 0], countdown=5
-                    )
+                    broadcast_to_meeting(meeting_id, "status_change", {"status": "in_progress"})
+
+                    # ── Start live transcription polling ──────────────────
+                    # Use Azure Speech if configured (better Urdu support),
+                    # otherwise fall back to Gladia/Recall transcript polling.
+                    if settings.AZURE_SPEECH_KEY:
+                        logger.info("Starting Azure audio polling for meeting %d", meeting_id)
+                        poll_audio_chunk.apply_async(
+                            args=[meeting_id, meeting.bot_id, 0],
+                            countdown=30,
+                        )
+                    else:
+                        logger.info("Starting Gladia transcript polling for meeting %d", meeting_id)
+                        poll_live_transcript.apply_async(
+                            args=[meeting_id, meeting.bot_id, 0],
+                            countdown=15,
+                        )
 
             elif latest_status == "done":
                 meeting.status = Meeting.Status.PROCESSING
@@ -668,3 +678,178 @@ def process_live_chunks():
                 )
         except Exception as exc:
             logger.error("process_live_chunks failed for meeting %d: %s", meeting.id, exc)
+
+@shared_task
+def poll_audio_chunk(meeting_id: int, bot_id: str, last_segment_count: int = 0):
+    """
+    Every 30 seconds during a live meeting:
+    1. Download the latest recording from Recall.ai
+    2. Send the FULL audio to Azure Speech (it's the only option — Recall gives one URL)
+    3. Azure returns ALL segments from the start of the meeting
+    4. We skip segments we've already processed (tracked by last_segment_count)
+    5. Only NEW segments get saved to DB, buffered, and broadcast
+
+    The `last_segment_count` parameter tracks how many Azure segments we've already
+    processed so we don't create duplicate LiveTranscriptSegment rows.
+    """
+    from django.db.models import F
+    from meetings.models import Meeting, Speaker, LiveTranscriptSegment
+    from meetings.services.recall_service import RecallService
+    from meetings.services.azure_speech import AzureSpeechService
+    from meetings.broadcast import broadcast_to_meeting
+    from meetings.transcript_buffer import buffer_manager
+
+    try:
+        meeting = Meeting.objects.get(pk=meeting_id)
+    except Meeting.DoesNotExist:
+        return
+
+    # Stop if meeting ended
+    if meeting.status not in (Meeting.Status.IN_PROGRESS, Meeting.Status.BOT_JOINING):
+        logger.info("poll_audio_chunk: meeting %d status=%s, stopping", meeting_id, meeting.status)
+        return
+
+    try:
+        # ── Get recording URL from Recall.ai ─────────────────────────────────
+        recall_svc = RecallService()
+        bot_data = recall_svc.get_bot_status(bot_id)
+        recordings = bot_data.get("recordings", [])
+
+        if not recordings:
+            # No recording yet — try again in 30s
+            poll_audio_chunk.apply_async(
+                args=[meeting_id, bot_id, last_segment_count],
+                countdown=30,
+            )
+            return
+
+        # Get download URL
+        recording_url = None
+        for rec in recordings:
+            media = rec.get("media_shortcuts", {})
+            url = media.get("video_mixed", {}).get("data", {}).get("download_url")
+            if url:
+                recording_url = url
+                break
+
+        if not recording_url:
+            poll_audio_chunk.apply_async(
+                args=[meeting_id, bot_id, last_segment_count],
+                countdown=30,
+            )
+            return
+
+        # ── Download and transcribe with Azure ────────────────────────────────
+        # NOTE: This transcribes the full recording every time.
+        # We deduplicate by skipping the first `last_segment_count` segments.
+        azure_svc = AzureSpeechService()
+        result = azure_svc.transcribe_from_url(recording_url)
+
+        all_segments = result.get("segments", [])
+        total_segments = len(all_segments)
+
+        if total_segments <= last_segment_count:
+            # No new segments — try again in 30s
+            logger.debug("poll_audio_chunk: no new segments (%d <= %d)", total_segments, last_segment_count)
+            poll_audio_chunk.apply_async(
+                args=[meeting_id, bot_id, last_segment_count],
+                countdown=30,
+            )
+            return
+
+        # Only process segments we haven't seen yet
+        new_segments = all_segments[last_segment_count:]
+        logger.info(
+            "poll_audio_chunk: meeting=%d total=%d new=%d (skipped %d already processed)",
+            meeting_id, total_segments, len(new_segments), last_segment_count,
+        )
+
+        # ── Process each NEW segment ─────────────────────────────────────────
+        for segment in new_segments:
+            speaker_name = segment.get("speaker", "Unknown")
+            text = segment.get("text", "").strip()
+            start_time = segment.get("start", 0)
+            end_time = segment.get("end", 0)
+
+            if not text:
+                continue
+
+            # Get or create speaker
+            speaker, created = Speaker.objects.get_or_create(
+                meeting=meeting,
+                recall_participant_id=speaker_name,
+                defaults={"name": speaker_name},
+            )
+
+            if created:
+                broadcast_to_meeting(meeting_id, "speaker_joined", {
+                    "speaker_id": speaker.id,
+                    "speaker_name": speaker.name,
+                })
+
+            # Update speaker stats atomically (avoid stale ORM reads)
+            word_delta = len(text.split())
+            time_delta = max(0, int(end_time - start_time))
+
+            Speaker.objects.filter(pk=speaker.id).update(
+                word_count=F("word_count") + word_delta,
+                talk_time_seconds=F("talk_time_seconds") + time_delta,
+                is_speaking=True,
+                last_quote=text[:200],
+            )
+
+            # Save segment to DB
+            LiveTranscriptSegment.objects.create(
+                meeting=meeting,
+                speaker=speaker,
+                text=text,
+                start_time=start_time,
+                end_time=end_time,
+                is_final=True,
+            )
+
+            # Buffer for Gemini 1-min analysis
+            if buffer_manager.is_active(meeting_id):
+                buffer_manager.append(
+                    meeting_id=meeting_id,
+                    speaker_id=speaker.id,
+                    speaker_name=speaker.name,
+                    text=text,
+                    start_t=start_time,
+                    end_t=end_time,
+                )
+
+            # Push to dashboard live feed
+            speaker.refresh_from_db()
+            broadcast_to_meeting(meeting_id, "transcript_segment", {
+                "speaker_id": speaker.id,
+                "speaker_name": speaker.name,
+                "text": text,
+                "start_time": start_time,
+                "end_time": end_time,
+                "is_final": True,
+                "language": segment.get("language", "unknown"),
+                "word_count": speaker.word_count,
+                "talk_time_seconds": speaker.talk_time_seconds,
+            })
+
+            logger.info(
+                "Azure segment [%s][%s]: %s",
+                segment.get("language", "?"),
+                speaker_name,
+                text[:60],
+            )
+
+        # ── Schedule next poll ────────────────────────────────────────────────
+        poll_audio_chunk.apply_async(
+            args=[meeting_id, bot_id, total_segments],
+            countdown=30,
+        )
+
+    except Exception as exc:
+        logger.error("poll_audio_chunk error for meeting %d: %s", meeting_id, exc)
+        # Retry with same segment count (don't skip anything on error)
+        poll_audio_chunk.apply_async(
+            args=[meeting_id, bot_id, last_segment_count],
+            countdown=30,
+        )

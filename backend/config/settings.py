@@ -242,6 +242,10 @@ CHANNEL_LAYERS = {
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 RECALL_AI_API_KEY = os.getenv("RECALL_AI_API_KEY", "")
 
+# ── Azure Speech (Urdu/English transcription) ──
+AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
+AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "southeastasia")
+
 # ── Webhook base URL (for Recall.ai to reach your server) ──
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 

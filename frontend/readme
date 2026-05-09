@@ -57,3 +57,8 @@ npm run dev
 ---
 
 Start them in order 1 → 5. Once all are running, tell me and we'll test everything!
+
+
+git add .
+git commit -m "your message"
+git push

@@ -33,7 +33,7 @@ class RecallService:
     # ──────────────────────────────────────────────
     # Create Bot
     # ──────────────────────────────────────────────
-    def create_bot(self, meeting_url: str, bot_name: str = "MeetingIntel Bot", live_language: str = "English") -> dict:
+    def create_bot(self, meeting_url: str, bot_name: str = "m Abduallah", live_language: str = "English") -> dict:
         webhook_base = self._get_webhook_base()
 
         # Build Gladia language config based on chosen live_language

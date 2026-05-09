@@ -76,7 +76,7 @@ class MeetingViewSet(viewsets.ModelViewSet):
             live_language = getattr(meeting, 'live_language', 'English')
             bot_data = recall_svc.create_bot(
                 meeting_url=meeting.meeting_url,
-                bot_name="MeetingIntel Bot",
+                bot_name="Jhony jee ",
                 live_language=live_language,
             )
             meeting.bot_id = bot_data.get("id", "")
