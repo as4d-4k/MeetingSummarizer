@@ -49,6 +49,21 @@ class Meeting(models.Model):
     live_language = models.CharField("Live Language", max_length=50, default="English")
     summary_language = models.CharField("Summary Language", max_length=50, default="English")
 
+    # Transcription mode chosen when meeting was created:
+    #   'auto'  — Azure uses its default detection (no special config)
+    #   'skip'  — Skip first 8 seconds so Azure warms up on actual speech
+    #   'hints' — Inject user's AI-generated phrase hint table
+    transcription_mode = models.CharField(
+        "Transcription Mode",
+        max_length=10,
+        default="auto",
+        choices=[
+            ("auto",  "Auto (default)"),
+            ("skip",  "Auto-detect (skip 8s warmup)"),
+            ("hints", "Use preferred language + AI hints"),
+        ],
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

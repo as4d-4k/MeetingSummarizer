@@ -53,9 +53,11 @@ client.interceptors.response.use(
 // ── API Functions ──
 
 // Auth
-export const registerUser = (data) => client.post('/accounts/register/', data);
-export const loginUser = (data) => client.post('/accounts/login/', data);
-export const getProfile = () => client.get('/accounts/profile/');
+export const registerUser             = (data) => client.post('/accounts/register/', data);
+export const loginUser                = (data) => client.post('/accounts/login/', data);
+export const getProfile               = ()     => client.get('/accounts/profile/');
+export const getLanguagePreferences   = ()     => client.get('/accounts/language-preferences/');
+export const saveLanguagePreferences  = (data) => client.post('/accounts/language-preferences/', data);
 
 // Meetings
 export const getMeetings = (params) => client.get('/meetings/', { params });

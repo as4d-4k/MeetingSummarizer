@@ -1,5 +1,5 @@
 """
-Custom User model for the Meeting Summarizer.
+Custom User model + UserLanguageProfile for Meeting Summarizer.
 Uses email as the primary login field instead of username.
 """
 
@@ -26,3 +26,51 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.email
+
+
+class UserLanguageProfile(models.Model):
+    """
+    Stores a user's language + industry preferences and
+    the AI-generated speech hint table used to warm up Azure Speech.
+    One-to-one with User (created on first save).
+    """
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="language_profile",
+    )
+
+    # Language preferences (BCP-47 codes)
+    primary_language   = models.CharField("Primary Language Code",   max_length=10, default="en-US")
+    secondary_language = models.CharField("Secondary Language Code", max_length=10, default="en-US")
+
+    # Industry domain
+    industry = models.CharField(
+        "Industry",
+        max_length=50,
+        default="general",
+        choices=[
+            ("technology",  "Technology"),
+            ("finance",     "Finance"),
+            ("medical",     "Healthcare"),
+            ("education",   "Education"),
+            ("legal",       "Legal"),
+            ("general",     "General"),
+        ],
+    )
+
+    # AI-generated phrase hints stored as a JSON list of strings
+    # e.g. ["یہ ٹھیک ہے", "project deadline", "milestone", ...]
+    hint_phrases = models.JSONField("Hint Phrases", default=list)
+
+    # Metadata
+    hints_generated_at = models.DateTimeField("Hints Generated At", null=True, blank=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "user_language_profiles"
+
+    def __str__(self):
+        return f"{self.user.email} — {self.primary_language}/{self.industry}"

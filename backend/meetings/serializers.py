@@ -82,6 +82,7 @@ class MeetingDetailSerializer(serializers.ModelSerializer):
             "target_topics",
             "live_language",
             "summary_language",
+            "transcription_mode",
             "full_transcript",
             "final_summary",
             "action_items",
@@ -107,7 +108,15 @@ class MeetingCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Meeting
-        fields = ["id", "meeting_url", "title", "target_topics", "live_language", "summary_language"]
+        fields = [
+            "id",
+            "meeting_url",
+            "title",
+            "target_topics",
+            "live_language",
+            "summary_language",
+            "transcription_mode",   # 'skip' | 'hints' | 'auto'
+        ]
 
     def create(self, validated_data):
         # Automatically assign the logged-in user

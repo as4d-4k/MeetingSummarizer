@@ -74,6 +74,34 @@ class MeetingViewSet(viewsets.ModelViewSet):
         try:
             recall_svc = RecallService()
             live_language = getattr(meeting, 'live_language', 'English')
+
+            # ── Load user language profile for hint/skip mode ──────────────────
+            transcription_mode = getattr(meeting, 'transcription_mode', 'auto')
+            hint_phrases       = []
+            skip_warmup_secs   = 0.0
+
+            if transcription_mode == 'hints':
+                # Use AI-generated hint table from user's language profile
+                try:
+                    profile      = request.user.language_profile
+                    hint_phrases = profile.hint_phrases or []
+                    logger.info(
+                        "start_bot: using %d hint phrases for meeting %d",
+                        len(hint_phrases), meeting.id,
+                    )
+                except Exception:
+                    logger.warning("No language profile found for user %s", request.user.email)
+
+            elif transcription_mode == 'skip':
+                # Skip first 8 seconds so Azure can warm up and auto-detect language
+                skip_warmup_secs = 8.0
+                logger.info("start_bot: skip-warmup mode (%.0fs) for meeting %d", skip_warmup_secs, meeting.id)
+
+            # Store on meeting so the processing pipeline can pick it up
+            meeting.hint_phrases     = hint_phrases
+            meeting.skip_warmup_secs = skip_warmup_secs
+            meeting.save(update_fields=[])
+
             bot_data = recall_svc.create_bot(
                 meeting_url=meeting.meeting_url,
                 bot_name="Jhony jee ",
@@ -87,9 +115,12 @@ class MeetingViewSet(viewsets.ModelViewSet):
 
             return Response(
                 {
-                    "message": "Bot dispatched.",
-                    "bot_id": meeting.bot_id,
-                    "status": meeting.status,
+                    "message":            "Bot dispatched.",
+                    "bot_id":             meeting.bot_id,
+                    "status":             meeting.status,
+                    "transcription_mode": transcription_mode,
+                    "hints_loaded":       len(hint_phrases),
+                    "skip_warmup_secs":   skip_warmup_secs,
                 },
                 status=status.HTTP_200_OK,
             )

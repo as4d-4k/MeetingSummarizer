@@ -517,12 +517,22 @@ def poll_bot_status(meeting_id: int):
                         )
 
             elif latest_status == "done":
-                meeting.status = Meeting.Status.PROCESSING
-                meeting.save(update_fields=["status"])
+                # ── Bot finished recording ─────────────────────────────────
+                # Do NOT set meeting.status = PROCESSING here.
+                # poll_audio_chunk may still be queued for its final Azure pass
+                # (warmup detect + language lock). Setting PROCESSING now blocks
+                # it — it sees 'processing' and exits in 0.045s before Azure runs.
+                #
+                # Strategy: keep status IN_PROGRESS, give poll_audio_chunk 90s
+                # to complete its Azure run, then start post-meeting pipeline.
+                # process_meeting_pipeline sets PROCESSING itself when it starts.
                 broadcast_to_meeting(
                     meeting_id, "status_change", {"status": "processing"}
                 )
-                process_meeting_pipeline.apply_async(args=[meeting_id], countdown=30)
+                process_meeting_pipeline.apply_async(
+                    args=[meeting_id],
+                    countdown=90,   # 90s window for final Azure transcription
+                )
                 return
 
             elif latest_status in ("fatal", "analysis_failed"):
@@ -739,11 +749,46 @@ def poll_audio_chunk(meeting_id: int, bot_id: str, last_segment_count: int = 0):
             )
             return
 
-        # ── Download and transcribe with Azure ────────────────────────────────
-        # NOTE: This transcribes the full recording every time.
-        # We deduplicate by skipping the first `last_segment_count` segments.
+        # ── Load hint phrases / skip config from meeting's transcription_mode ──
+        hint_phrases       = []
+        skip_warmup_secs   = 0.0
+        detect_languages   = ["ur-PK", "en-US"]   # Urdu + English code-switching
+        transcription_mode = getattr(meeting, 'transcription_mode', 'auto')
+
+        # ← ALWAYS VISIBLE: tells us exactly what's in the DB for this meeting
+        logger.info(
+            "poll_audio_chunk: meeting %d → transcription_mode='%s'",
+            meeting_id, transcription_mode,
+        )
+
+        if transcription_mode == 'hints':
+            # Load AI-generated hint phrases from the meeting owner's language profile
+            try:
+                from accounts.models import UserLanguageProfile
+                profile = UserLanguageProfile.objects.get(user=meeting.user)
+                hint_phrases = profile.hint_phrases or []
+                # Use the user's actual language pair for auto-detect
+                detect_languages = [profile.primary_language, "en-US"]
+                logger.info(
+                    "poll_audio_chunk: hints mode — %d phrases, langs=%s, meeting %d",
+                    len(hint_phrases), detect_languages, meeting_id,
+                )
+            except Exception as e:
+                logger.warning("Could not load language profile for meeting %d: %s", meeting_id, e)
+
+        elif transcription_mode == 'skip':
+            # 8-second warm-up: Azure hears real speech to auto-detect language,
+            # then we discard those first 8s and capture from second 9 onwards
+            skip_warmup_secs = 8.0
+            logger.info("poll_audio_chunk: skip-warmup mode (%.0fs) for meeting %d", skip_warmup_secs, meeting_id)
+
         azure_svc = AzureSpeechService()
-        result = azure_svc.transcribe_from_url(recording_url)
+        result = azure_svc.transcribe_from_url(
+            recording_url,
+            hint_phrases=hint_phrases,
+            skip_warmup_seconds=skip_warmup_secs,
+            detect_languages=detect_languages,
+        )
 
         all_segments = result.get("segments", [])
         total_segments = len(all_segments)
