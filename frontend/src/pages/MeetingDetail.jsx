@@ -166,7 +166,7 @@ export default function MeetingDetail() {
 
     } else if (msg.type === 'transcript_segment') {
       const { speaker_id, speaker_name, text, start_time, end_time, word_count, talk_time_seconds } = msg.data;
-      setLiveFeed(p => [{ speaker_name, text, start_time, end_time, _new: true }, ...p].slice(0, 50));
+      setLiveFeed(p => [{ speaker_name, text, start_time, end_time, _new: true }, ...p]);
       setLiveSpeakers(p => {
         const idx = p.findIndex(s => s.id === speaker_id);
         const updated = idx === -1

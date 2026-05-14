@@ -554,6 +554,7 @@ def poll_bot_status(meeting_id: int):
 
 def _fetch_transcript(meeting) -> str:
     from meetings.services import RecallService, TranscriptionService
+    from meetings.models import LiveTranscriptSegment
 
     if not meeting.bot_id:
         return meeting.full_transcript
@@ -561,6 +562,7 @@ def _fetch_transcript(meeting) -> str:
     recall_svc = RecallService()
     transcription_svc = TranscriptionService()
 
+    # ── Attempt 1: Recall.ai transcript API ──
     try:
         segments = recall_svc.get_transcript(meeting.bot_id)
         if segments:
@@ -570,6 +572,7 @@ def _fetch_transcript(meeting) -> str:
     except Exception as exc:
         logger.warning("Recall transcript fetch failed: %s", exc)
 
+    # ── Attempt 2: Download recording + Whisper/Azure ──
     try:
         media_dir = os.path.join(settings.BASE_DIR, "media", "recordings")
         os.makedirs(media_dir, exist_ok=True)
@@ -580,7 +583,8 @@ def _fetch_transcript(meeting) -> str:
             if recording_url:
                 recall_svc.download_recording(recording_url, output_path)
             else:
-                return meeting.full_transcript
+                logger.warning("No recording URL available for meeting %d", meeting.id)
+                raise ValueError("No recording URL")
         else:
             logger.info("Using existing recording file: %s", output_path)
 
@@ -596,6 +600,22 @@ def _fetch_transcript(meeting) -> str:
             return transcript
     except Exception as exc:
         logger.warning("Recording transcription failed: %s", exc)
+
+    # ── Attempt 3: Assemble from LiveTranscriptSegments already in DB ──
+    live_segments = LiveTranscriptSegment.objects.filter(
+        meeting=meeting
+    ).select_related("speaker").order_by("start_time")
+
+    if live_segments.exists():
+        logger.info(
+            "Assembling transcript from %d live segments for meeting %d",
+            live_segments.count(), meeting.id
+        )
+        lines = []
+        for seg in live_segments:
+            speaker = seg.speaker.name if seg.speaker else "Unknown"
+            lines.append(f"[{speaker}]: {seg.text}")
+        return "\n".join(lines)
 
     return meeting.full_transcript
 

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 // ── Colour palette per speaker index ─────────────────────────────────────────
 const SPEAKER_COLORS = [
@@ -28,6 +28,114 @@ function fmtTime(seconds) {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function SpeakerCard({ sp, c }) {
+  const [expanded, setExpanded] = useState(false);
+  const sent = SENTIMENT[sp.sentiment] ?? SENTIMENT.neutral;
+  const score = sp.performance_score ?? 0;
+  const summaryText = sp.latest_summary || sp.summary || "";
+  const hasLongSummary = summaryText.length > 120;
+
+  return (
+    <div className="glass-card animate-fade-in" style={{
+      padding: "20px",
+      border: sp.is_speaking ? `1.5px solid ${c.bar}` : "1px solid var(--border-subtle)",
+      boxShadow: sp.is_speaking ? `0 0 16px ${c.bar}40` : "none",
+      transform: sp.is_speaking ? "translateY(-2px)" : "none",
+      transition: "all 0.3s ease",
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div style={{
+          width: 42, height: 42, borderRadius: "10px",
+          background: c.bg, color: c.text, border: `1px solid ${c.border}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 14, fontWeight: 700, flexShrink: 0, fontFamily: "var(--font-display)"
+        }}>
+          {initials(sp.name)}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {sp.name}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{sp.word_count?.toLocaleString()} words</div>
+        </div>
+        <div style={{
+          width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+          background: sp.is_speaking ? "#00C896" : "rgba(255,255,255,0.1)",
+          boxShadow: sp.is_speaking ? "0 0 8px #00C896" : "none",
+          transition: "all 0.3s",
+        }} />
+      </div>
+
+      {/* Stats */}
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 }}>
+        <span>Talk time <strong style={{ color: "var(--text-primary)", fontWeight: 600 }}>{fmtTime(sp.talk_time_seconds || 0)}</strong></span>
+        <span style={{
+          background: sent.bg, color: sent.color,
+          fontSize: 11, padding: "3px 10px", borderRadius: 100, fontWeight: 500
+        }}>{sent.label}</span>
+      </div>
+
+      {/* Score bar */}
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
+          <span>Performance</span>
+          <strong style={{ color: "var(--text-primary)", fontWeight: 600 }}>
+            {sp.performance_score != null ? `${Math.round(sp.performance_score)}/100` : "—"}
+          </strong>
+        </div>
+        <div style={{ height: 6, background: "rgba(255,255,255,0.05)", borderRadius: 3, overflow: "hidden" }}>
+          <div style={{
+            height: "100%", width: `${score}%`, background: c.bar,
+            borderRadius: 3, transition: "width 1.2s ease",
+            boxShadow: `0 0 8px ${c.bar}`,
+          }} />
+        </div>
+      </div>
+
+      {/* Summary or Last quote — expandable */}
+      {(summaryText || sp.last_quote) && (
+        <div style={{
+          marginTop: 16, fontSize: 13,
+          borderTop: "1px solid var(--border-subtle)", paddingTop: 12,
+          lineHeight: 1.6,
+        }}>
+          {summaryText ? (
+            <>
+              <div style={{
+                color: "var(--text-secondary)",
+                ...(expanded ? {} : {
+                  display: "-webkit-box", WebkitLineClamp: 4,
+                  WebkitBoxOrient: "vertical", overflow: "hidden",
+                }),
+              }}>
+                <strong style={{ color: "var(--text-primary)" }}>Live Summary: </strong>
+                {summaryText}
+              </div>
+              {hasLongSummary && (
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  style={{
+                    background: "none", border: "none", cursor: "pointer",
+                    color: "var(--accent-violet)", fontSize: 12, marginTop: 6,
+                    padding: 0, fontWeight: 500,
+                  }}
+                >
+                  {expanded ? "Show less ▴" : "Show more ▾"}
+                </button>
+              )}
+            </>
+          ) : (
+            <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+              "{sp.last_quote}"
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function LiveDashboard({ speakers = [], feed = [] }) {
@@ -94,96 +202,14 @@ export default function LiveDashboard({ speakers = [], feed = [] }) {
               {speakers.map((sp) => {
                 const ci = speakerIndex[sp.id] ?? 0;
                 const c = getColor(ci);
-                const sent = SENTIMENT[sp.sentiment] ?? SENTIMENT.neutral;
-                const score = sp.performance_score ?? 0;
-
-                return (
-                  <div key={sp.id} className="glass-card animate-fade-in" style={{
-                    padding: "20px",
-                    border: sp.is_speaking ? `1.5px solid ${c.bar}` : "1px solid var(--border-subtle)",
-                    boxShadow: sp.is_speaking ? `0 0 16px ${c.bar}40` : "none",
-                    transform: sp.is_speaking ? "translateY(-2px)" : "none",
-                  }}>
-                    {/* Header */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-                      <div style={{
-                        width: 42, height: 42, borderRadius: "10px",
-                        background: c.bg, color: c.text, border: `1px solid ${c.border}`,
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: 14, fontWeight: 700, flexShrink: 0, fontFamily: "var(--font-display)"
-                      }}>
-                        {initials(sp.name)}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {sp.name}
-                        </div>
-                        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{sp.word_count?.toLocaleString()} words</div>
-                      </div>
-                      <div style={{
-                        width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                        background: sp.is_speaking ? "#00C896" : "rgba(255,255,255,0.1)",
-                        boxShadow: sp.is_speaking ? "0 0 8px #00C896" : "none",
-                        transition: "all 0.3s",
-                      }} />
-                    </div>
-
-                    {/* Stats */}
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 }}>
-                      <span>Talk time <strong style={{ color: "var(--text-primary)", fontWeight: 600 }}>{fmtTime(sp.talk_time_seconds || 0)}</strong></span>
-                      <span style={{
-                        background: sent.bg, color: sent.color,
-                        fontSize: 11, padding: "3px 10px", borderRadius: 100, fontWeight: 500
-                      }}>{sent.label}</span>
-                    </div>
-
-                    {/* Score bar */}
-                    <div>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
-                        <span>Performance</span>
-                        <strong style={{ color: "var(--text-primary)", fontWeight: 600 }}>
-                          {sp.performance_score != null ? `${Math.round(sp.performance_score)}/100` : "—"}
-                        </strong>
-                      </div>
-                      <div style={{ height: 6, background: "rgba(255,255,255,0.05)", borderRadius: 3, overflow: "hidden" }}>
-                        <div style={{
-                          height: "100%", width: `${score}%`, background: c.bar,
-                          borderRadius: 3, transition: "width 1.2s ease",
-                          boxShadow: `0 0 8px ${c.bar}`,
-                        }} />
-                      </div>
-                    </div>
-
-                    {/* Summary or Last quote */}
-                    {(sp.latest_summary || sp.summary || sp.last_quote) && (
-                      <div style={{
-                        marginTop: 16, fontSize: 13, color: "var(--text-muted)", fontStyle: "italic",
-                        borderTop: "1px solid var(--border-subtle)", paddingTop: 12,
-                        lineHeight: 1.6,
-                        display: "-webkit-box", WebkitLineClamp: 4,
-                        WebkitBoxOrient: "vertical", overflow: "hidden",
-                      }}>
-                        {sp.latest_summary || sp.summary ? (
-                          <>
-                            <strong style={{color:"var(--text-primary)", fontStyle:"normal"}}>Live Summary: </strong>
-                            <span style={{ fontStyle: "normal", color: "var(--text-secondary)" }}>
-                              {sp.latest_summary || sp.summary}
-                            </span>
-                          </>
-                        ) : (
-                          `"${sp.last_quote}"`
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
+                return <SpeakerCard key={sp.id} sp={sp} c={c} />;
               })}
             </div>
           )}
         </div>
 
         {/* ── Right Column: Live Feed ── */}
-        <div className="glass-card" style={{ overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "600px" }}>
+        <div className="glass-card" style={{ overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "80vh" }}>
           <div style={{
             padding: "16px 24px", borderBottom: "1px solid var(--border-subtle)",
             fontSize: 13, fontWeight: 600, color: "var(--text-secondary)",

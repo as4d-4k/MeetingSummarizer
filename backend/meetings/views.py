@@ -162,7 +162,22 @@ class MeetingViewSet(viewsets.ModelViewSet):
         try:
             recall_svc = RecallService()
             recall_svc.leave_bot(meeting.bot_id)
-            return Response({"message": "Bot is leaving the meeting."}, status=status.HTTP_200_OK)
+
+            # ── Update status immediately so the UI reflects the change ──
+            from .broadcast import broadcast_to_meeting
+            from .transcript_buffer import buffer_manager
+            from .tasks import process_meeting_pipeline
+
+            buffer_manager.deactivate_meeting(meeting.id)
+            broadcast_to_meeting(meeting.id, "status_change", {"status": "processing"})
+
+            # Give Recall.ai 30s to finalize the recording, then run the pipeline
+            process_meeting_pipeline.apply_async(
+                args=[meeting.id],
+                countdown=30,
+            )
+
+            return Response({"message": "Bot is leaving. Processing will begin shortly."}, status=status.HTTP_200_OK)
         except RecallServiceError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
