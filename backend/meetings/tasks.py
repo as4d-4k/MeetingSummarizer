@@ -559,10 +559,28 @@ def _fetch_transcript(meeting) -> str:
     if not meeting.bot_id:
         return meeting.full_transcript
 
+    # ── Attempt 1 (BEST): Use LiveTranscriptSegments already in DB ──
+    # These were captured in real-time during the meeting via Azure Speech
+    # or Recall polling — highest quality, no hallucination.
+    live_segments = LiveTranscriptSegment.objects.filter(
+        meeting=meeting
+    ).select_related("speaker").order_by("start_time")
+
+    if live_segments.exists():
+        logger.info(
+            "Assembling transcript from %d live segments for meeting %d",
+            live_segments.count(), meeting.id
+        )
+        lines = []
+        for seg in live_segments:
+            speaker = seg.speaker.name if seg.speaker else "Unknown"
+            lines.append(f"[{speaker}]: {seg.text}")
+        return "\n".join(lines)
+
     recall_svc = RecallService()
     transcription_svc = TranscriptionService()
 
-    # ── Attempt 1: Recall.ai transcript API ──
+    # ── Attempt 2: Recall.ai transcript API ──
     try:
         segments = recall_svc.get_transcript(meeting.bot_id)
         if segments:
@@ -572,7 +590,7 @@ def _fetch_transcript(meeting) -> str:
     except Exception as exc:
         logger.warning("Recall transcript fetch failed: %s", exc)
 
-    # ── Attempt 2: Download recording + Whisper/Azure ──
+    # ── Attempt 3: Download recording + Whisper/Azure ──
     try:
         media_dir = os.path.join(settings.BASE_DIR, "media", "recordings")
         os.makedirs(media_dir, exist_ok=True)
@@ -600,22 +618,6 @@ def _fetch_transcript(meeting) -> str:
             return transcript
     except Exception as exc:
         logger.warning("Recording transcription failed: %s", exc)
-
-    # ── Attempt 3: Assemble from LiveTranscriptSegments already in DB ──
-    live_segments = LiveTranscriptSegment.objects.filter(
-        meeting=meeting
-    ).select_related("speaker").order_by("start_time")
-
-    if live_segments.exists():
-        logger.info(
-            "Assembling transcript from %d live segments for meeting %d",
-            live_segments.count(), meeting.id
-        )
-        lines = []
-        for seg in live_segments:
-            speaker = seg.speaker.name if seg.speaker else "Unknown"
-            lines.append(f"[{speaker}]: {seg.text}")
-        return "\n".join(lines)
 
     return meeting.full_transcript
 

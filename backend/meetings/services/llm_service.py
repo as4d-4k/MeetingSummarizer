@@ -256,16 +256,16 @@ class LLMService:
                         "You are an expert multilingual meeting analyst. You specialize in "
                         "processing meeting transcripts that contain a mix of Urdu and English "
                         "(code-switching). Your job is to:\n"
-                        "1. Translate ALL content into the requested language: {summary_language}\n"
+                        "1. Translate ALL content into clear, professional ENGLISH\n"
                         "2. Summarize the key points discussed\n"
                         "3. Extract any action items with assignees\n"
                         "4. Identify speakers by name or role\n"
                         "5. Note any key decisions made\n\n"
                         "CRITICAL OUTPUT RULE: "
-                        "If {summary_language} is 'Roman Urdu', write EVERYTHING in Roman Urdu — "
-                        "Urdu words spelled with Latin/English letters (e.g. 'theek hai', 'budget ki baat'). "
-                        "NEVER output Urdu script (اردو) when Roman Urdu is selected. "
-                        "ALL text outputs (summary, action items, decisions) MUST be in: {summary_language}.\n"
+                        "ALL text outputs (english_translation, summary, key_decisions, action items) "
+                        "MUST be written in ENGLISH. Even if the transcript is in Urdu, Roman Urdu, "
+                        "or any other language, you MUST translate everything to English. "
+                        "NEVER output Roman Urdu or Urdu script — always professional English.\n"
                         "{format_instructions}"
                     ),
                 ),
@@ -326,10 +326,10 @@ class LLMService:
                         "Requirements: concise title, professional executive summary (3-5 sentences), "
                         "main topics, detailed summary, and consolidated deduplicated action items.\n"
                         "CRITICAL OUTPUT RULE: "
-                        "If {summary_language} is 'Roman Urdu', write ALL output in Roman Urdu — "
-                        "Urdu words spelled in Latin/English letters ONLY (e.g. 'theek hai', 'budget ki baat', 'meeting khatam'). "
-                        "NEVER use Urdu script characters (ا ب پ ت etc.) when Roman Urdu is selected. "
-                        "ALL output MUST be in this language: {summary_language}.\n{format_instructions}"
+                        "ALL output (title, executive_summary, key_topics, detailed_summary, action items) "
+                        "MUST be written in clear, professional ENGLISH. Even if the source transcript "
+                        "was in Urdu or Roman Urdu, translate and write everything in English. "
+                        "NEVER output Roman Urdu or Urdu script — always English.\n{format_instructions}"
                     ),
                 ),
                 (
