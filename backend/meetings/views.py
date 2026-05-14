@@ -181,6 +181,26 @@ class MeetingViewSet(viewsets.ModelViewSet):
         except RecallServiceError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
+    @action(detail=True, methods=["post"], url_path="send-notifications")
+    def send_notifications(self, request, pk=None):
+        """
+        POST /api/meetings/{id}/send-notifications/
+        Manually trigger action item notifications for this meeting.
+        """
+        from .tasks import distribute_action_items
+
+        meeting = self.get_object()
+        if meeting.status != Meeting.Status.COMPLETED:
+            return Response(
+                {"error": "Meeting must be completed before sending notifications."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        distribute_action_items.apply_async(args=[meeting.id])
+        return Response(
+            {"message": "Notification distribution triggered."},
+            status=status.HTTP_200_OK,
+        )
     # ── NEW: Get current live speaker stats ──────────────────────────────────
     @action(detail=True, methods=["get"], url_path="live-status")
     def live_status(self, request, pk=None):

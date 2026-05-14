@@ -203,7 +203,7 @@ def flush_single_speaker(self, meeting_id: int, speaker_id: int, speaker_name: s
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_meeting_pipeline(self, meeting_id: int):
     """Post-meeting pipeline — unchanged from original."""
-    from meetings.models import Meeting, ActionItem, TranscriptChunk
+    from meetings.models import Meeting, ActionItem, TranscriptChunk, Speaker
     from meetings.services import RecallService, TranscriptionService, LLMService
 
     try:
@@ -269,11 +269,20 @@ def process_meeting_pipeline(self, meeting_id: int):
             )
 
             for item in processed.get("action_items", []):
+                # Resolve Speaker FK using the assigned_speaker_id from LLM
+                speaker_obj = None
+                speaker_id = item.get("assigned_speaker_id")
+                if speaker_id:
+                    speaker_obj = Speaker.objects.filter(
+                        id=speaker_id, meeting=meeting
+                    ).first()
+
                 ai = ActionItem.objects.create(
                     meeting=meeting,
                     assigned_speaker=item.get("assigned_to", "Unassigned"),
                     task_description=item.get("task", ""),
                     deadline=item.get("deadline"),
+                    speaker=speaker_obj,
                 )
                 broadcast_to_meeting(
                     meeting_id,
@@ -283,6 +292,8 @@ def process_meeting_pipeline(self, meeting_id: int):
                         "assigned_speaker": ai.assigned_speaker,
                         "task_description": ai.task_description,
                         "deadline": ai.deadline,
+                        "speaker_id": speaker_obj.id if speaker_obj else None,
+                        "notification_sent": False,
                     },
                 )
 
@@ -303,6 +314,7 @@ def process_meeting_pipeline(self, meeting_id: int):
                 f"## Detailed Summary\n{final_output['detailed_summary']}"
             )
 
+        # Create action items from the final consolidated list too
         overall_items = final_output.get("overall_action_items", [])
         if overall_items:
             items_text = "\n".join(
@@ -323,6 +335,9 @@ def process_meeting_pipeline(self, meeting_id: int):
         )
         broadcast_to_meeting(meeting_id, "status_change", {"status": "completed"})
 
+        # ── Trigger async notification distribution ──
+        distribute_action_items.apply_async(args=[meeting_id], countdown=5)
+
         logger.info("═══ Post-meeting pipeline complete for Meeting %d ═══", meeting_id)
         return {"meeting_id": meeting_id, "status": "completed"}
 
@@ -334,6 +349,131 @@ def process_meeting_pipeline(self, meeting_id: int):
             raise self.retry(exc=exc)
         return {"error": str(exc), "meeting_id": meeting_id}
 
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def distribute_action_items(self, meeting_id: int):
+    """
+    Post-meeting task: Groups action items by speaker and sends
+    notifications via Email and/or Slack.
+    Runs asynchronously so notification failures don't affect the pipeline.
+    """
+    from meetings.models import Meeting, ActionItem, Speaker, TeamDirectory
+    from meetings.services.notification_service import NotificationService
+    from django.utils import timezone
+    from collections import defaultdict
+
+    try:
+        meeting = Meeting.objects.get(pk=meeting_id)
+    except Meeting.DoesNotExist:
+        logger.error("distribute_action_items: Meeting %d not found", meeting_id)
+        return
+
+    action_items = ActionItem.objects.filter(
+        meeting=meeting, notification_sent=False
+    ).select_related("speaker")
+
+    if not action_items.exists():
+        logger.info("No unsent action items for meeting %d", meeting_id)
+        return
+
+    # Group action items by speaker
+    grouped = defaultdict(list)
+    for ai in action_items:
+        key = ai.speaker_id or ai.assigned_speaker
+        grouped[key].append(ai)
+
+    notification_svc = NotificationService()
+    results = {"email_sent": 0, "slack_sent": 0, "skipped": 0}
+
+    for speaker_key, items in grouped.items():
+        # Resolve contact info
+        email = ""
+        slack_id = ""
+        speaker_name = items[0].assigned_speaker
+
+        if isinstance(speaker_key, int):
+            # We have a Speaker FK — check email on the Speaker record
+            speaker = Speaker.objects.filter(id=speaker_key).first()
+            if speaker:
+                speaker_name = speaker.name
+                email = speaker.email or ""
+
+        # Fallback: look up in TeamDirectory
+        if not email or not slack_id:
+            directory_entry = TeamDirectory.objects.filter(
+                user=meeting.user,
+                name__iexact=speaker_name,
+            ).first()
+
+            if directory_entry:
+                email = email or directory_entry.email
+                slack_id = slack_id or directory_entry.slack_id
+
+        if not email and not slack_id:
+            logger.info(
+                "No contact info for '%s' (meeting %d) — skipping",
+                speaker_name, meeting_id
+            )
+            results["skipped"] += len(items)
+            continue
+
+        # Build the items payload
+        items_payload = [
+            {
+                "task": ai.task_description,
+                "deadline": ai.deadline or "",
+            }
+            for ai in items
+        ]
+
+        # Send Email
+        if email:
+            success = notification_svc.send_email_action_items(
+                email=email,
+                speaker_name=speaker_name,
+                action_items=items_payload,
+                meeting_title=meeting.title or "Untitled Meeting",
+                meeting_date=meeting.date,
+            )
+            if success:
+                results["email_sent"] += len(items)
+
+        # Send Slack
+        if slack_id:
+            success = notification_svc.send_slack_action_items(
+                slack_id=slack_id,
+                speaker_name=speaker_name,
+                action_items=items_payload,
+                meeting_title=meeting.title or "Untitled Meeting",
+                meeting_date=meeting.date,
+            )
+            if success:
+                results["slack_sent"] += len(items)
+
+        # Mark as sent if either channel succeeded
+        if (email and results["email_sent"]) or (slack_id and results["slack_sent"]):
+            now = timezone.now()
+            for ai in items:
+                ai.notification_sent = True
+                ai.notification_sent_at = now
+            ActionItem.objects.bulk_update(
+                items, ["notification_sent", "notification_sent_at"]
+            )
+
+            # Broadcast notification status to frontend
+            for ai in items:
+                broadcast_to_meeting(
+                    meeting_id,
+                    "notification_update",
+                    {
+                        "action_item_id": ai.id,
+                        "notification_sent": True,
+                    },
+                )
+
+    logger.info(
+        "Action item distribution for meeting %d: %s", meeting_id, results
+    )
 
 @shared_task
 def poll_live_transcript(meeting_id: int, bot_id: str, last_segment_index: int = 0):
@@ -573,8 +713,11 @@ def _fetch_transcript(meeting) -> str:
         )
         lines = []
         for seg in live_segments:
-            speaker = seg.speaker.name if seg.speaker else "Unknown"
-            lines.append(f"[{speaker}]: {seg.text}")
+            if seg.speaker:
+                speaker_label = f"{seg.speaker.name} (Speaker ID: {seg.speaker.id})"
+            else:
+                speaker_label = "Unknown"
+            lines.append(f"[{speaker_label}]: {seg.text}")
         return "\n".join(lines)
 
     recall_svc = RecallService()

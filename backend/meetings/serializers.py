@@ -18,9 +18,12 @@ class ActionItemSerializer(serializers.ModelSerializer):
             "task_description",
             "deadline",
             "is_completed",
+            "speaker",
+            "notification_sent",
+            "notification_sent_at",
             "created_at",
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "created_at", "notification_sent", "notification_sent_at"]
 
 
 class TranscriptChunkSerializer(serializers.ModelSerializer):

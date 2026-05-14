@@ -91,6 +91,19 @@ class ActionItem(models.Model):
     deadline = models.CharField("Deadline", max_length=100, blank=True, null=True)
     is_completed = models.BooleanField("Completed", default=False)
 
+    # Link to the actual Speaker record for disambiguation
+    speaker = models.ForeignKey(
+        "Speaker",
+        on_delete=models.SET_NULL,
+        related_name="action_items",
+        null=True,
+        blank=True,
+    )
+
+    # Notification tracking
+    notification_sent = models.BooleanField("Notification Sent", default=False)
+    notification_sent_at = models.DateTimeField("Notification Sent At", null=True, blank=True)
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -160,6 +173,7 @@ class Speaker(models.Model):
         "Recall Participant ID", max_length=255, blank=True, default=""
     )
     name = models.CharField("Display Name", max_length=150)
+    email = models.EmailField("Email", blank=True, default="")
 
     # Live stats — updated every time a transcript segment arrives
     is_speaking = models.BooleanField("Currently Speaking", default=False)
@@ -284,3 +298,32 @@ class SpeakerAnalysis(models.Model):
 
     def __str__(self):
         return f"{self.speaker.name} — score={self.performance_score} — Meeting {self.meeting_id}"
+
+
+class TeamDirectory(models.Model):
+    """
+    Maps participant names/emails to notification channels.
+    The meeting host's organization maintains this directory so that
+    action items can be automatically routed after meetings.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="team_directory",
+        help_text="The app user who owns this directory entry",
+    )
+    name = models.CharField("Display Name", max_length=150)
+    email = models.EmailField("Email Address", blank=True, default="")
+    slack_id = models.CharField("Slack User ID", max_length=50, blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "team_directory"
+        unique_together = ["user", "email"]
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.name} <{self.email}> (slack: {self.slack_id or '—'})"

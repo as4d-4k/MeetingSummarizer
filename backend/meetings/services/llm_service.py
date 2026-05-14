@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 class ActionItemOutput(BaseModel):
-    assigned_to: str = Field(description="Name or role assigned this task")
+    assigned_to: str = Field(description="Name of the person assigned this task")
+    assigned_speaker_id: Optional[int] = Field(default=None, description="The Speaker ID from the transcript (e.g. from '[John (Speaker ID: 4)]'). Extract the integer ID.")
     task: str = Field(description="Clear description of the task in English")
     deadline: Optional[str] = Field(default=None, description="Deadline if mentioned")
 
@@ -261,6 +262,10 @@ class LLMService:
                         "3. Extract any action items with assignees\n"
                         "4. Identify speakers by name or role\n"
                         "5. Note any key decisions made\n\n"
+                        "SPEAKER ID RULE: The transcript contains speaker labels like "
+                        "'[John (Speaker ID: 4)]: ...' — when extracting action items, "
+                        "you MUST include the 'assigned_speaker_id' integer from that label. "
+                        "This is critical for disambiguating speakers with the same name.\n\n"
                         "CRITICAL OUTPUT RULE: "
                         "ALL text outputs (english_translation, summary, key_decisions, action items) "
                         "MUST be written in ENGLISH. Even if the transcript is in Urdu, Roman Urdu, "
@@ -324,7 +329,11 @@ class LLMService:
                     (
                         "You are an expert meeting analyst. Generate a comprehensive final meeting summary.\n"
                         "Requirements: concise title, professional executive summary (3-5 sentences), "
-                        "main topics, detailed summary, and consolidated deduplicated action items.\n"
+                        "main topics, detailed summary, and consolidated deduplicated action items.\n\n"
+                        "SPEAKER ID RULE: The chunk summaries may reference speakers with IDs like "
+                        "'John (Speaker ID: 4)'. When consolidating action items, you MUST preserve "
+                        "the 'assigned_speaker_id' integer for each action item. This is critical "
+                        "for routing notifications to the correct person.\n\n"
                         "CRITICAL OUTPUT RULE: "
                         "ALL output (title, executive_summary, key_topics, detailed_summary, action items) "
                         "MUST be written in clear, professional ENGLISH. Even if the source transcript "

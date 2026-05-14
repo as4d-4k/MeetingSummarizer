@@ -389,7 +389,12 @@ export default function MeetingDetail() {
         {/* ACTION ITEMS */}
         {activeTab === 'actions' && (
           <div className="content-card">
-            <ActionItemList items={meeting.action_items || []} onUpdate={fetchMeeting} />
+            <ActionItemList
+              items={meeting.action_items || []}
+              onUpdate={fetchMeeting}
+              meetingId={meeting.id}
+              onSendNotifications={true}
+            />
           </div>
         )}
 

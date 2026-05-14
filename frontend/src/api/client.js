@@ -73,5 +73,6 @@ export const reprocessMeeting = (id) => client.post(`/meetings/${id}/reprocess/`
 export const getActionItems = (params) => client.get('/meetings/action-items/', { params });
 export const toggleActionItem = (id) => client.post(`/meetings/action-items/${id}/toggle-complete/`);
 export const deleteActionItem = (id) => client.delete(`/meetings/action-items/${id}/`);
+export const sendNotifications = (meetingId) => client.post(`/meetings/${meetingId}/send-notifications/`);
 
 export default client;
