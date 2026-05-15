@@ -57,10 +57,11 @@ class NotificationService:
             deadline_str = f" (Deadline: {deadline})" if deadline else ""
 
             items_text += f"  {i}. {task}{deadline_str}\n"
+            deadline_html = f"<br><em style='color:#e67e22;'>Deadline: {deadline}</em>" if deadline else ""
             items_html += (
                 f'<li style="margin-bottom:8px;">'
                 f"{task}"
-                f'{"<br><em style=\"color:#e67e22;\">Deadline: " + deadline + "</em>" if deadline else ""}'
+                f"{deadline_html}"
                 f"</li>"
             )
 
