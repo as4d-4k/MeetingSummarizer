@@ -3,7 +3,7 @@ Admin configuration for meetings and action items.
 """
 
 from django.contrib import admin
-from .models import Meeting, ActionItem, TranscriptChunk
+from .models import Meeting, ActionItem, TranscriptChunk, Speaker, TeamDirectory
 
 
 class ActionItemInline(admin.TabularInline):
@@ -38,3 +38,14 @@ class ActionItemAdmin(admin.ModelAdmin):
 class TranscriptChunkAdmin(admin.ModelAdmin):
     list_display = ["meeting", "chunk_index", "timestamp_start", "timestamp_end", "created_at"]
     list_filter = ["meeting"]
+
+@admin.register(Speaker)
+class SpeakerAdmin(admin.ModelAdmin):
+    list_display = ["name", "email", "meeting", "word_count", "is_speaking"]
+    search_fields = ["name", "email"]
+    list_filter = ["meeting"]
+
+@admin.register(TeamDirectory)
+class TeamDirectoryAdmin(admin.ModelAdmin):
+    list_display = ["name", "email", "slack_id", "user"]
+    search_fields = ["name", "email", "slack_id"]
