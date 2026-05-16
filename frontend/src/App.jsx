@@ -7,6 +7,7 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import MeetingDetail from './pages/MeetingDetail';
 import Admin from './pages/Admin';
+import TeamDirectory from './pages/TeamDirectory';
 
 export default function App() {
   return (
@@ -47,6 +48,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Layout><Admin /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team"
+            element={
+              <ProtectedRoute>
+                <Layout><TeamDirectory /></Layout>
               </ProtectedRoute>
             }
           />

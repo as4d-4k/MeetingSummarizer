@@ -3,7 +3,7 @@ Serializers for Meeting, ActionItem, and TranscriptChunk.
 """
 
 from rest_framework import serializers
-from .models import Meeting, ActionItem, TranscriptChunk
+from .models import Meeting, ActionItem, TranscriptChunk, TeamDirectory
 
 
 class ActionItemSerializer(serializers.ModelSerializer):
@@ -123,5 +123,25 @@ class MeetingCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         # Automatically assign the logged-in user
+        validated_data["user"] = self.context["request"].user
+        return super().create(validated_data)
+
+
+class TeamDirectorySerializer(serializers.ModelSerializer):
+    """Serializer for Team Directory entries."""
+
+    class Meta:
+        model = TeamDirectory
+        fields = [
+            "id",
+            "name",
+            "email",
+            "slack_id",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def create(self, validated_data):
         validated_data["user"] = self.context["request"].user
         return super().create(validated_data)

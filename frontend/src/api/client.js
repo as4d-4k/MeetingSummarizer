@@ -75,4 +75,10 @@ export const toggleActionItem = (id) => client.post(`/meetings/action-items/${id
 export const deleteActionItem = (id) => client.delete(`/meetings/action-items/${id}/`);
 export const sendNotifications = (meetingId) => client.post(`/meetings/${meetingId}/send-notifications/`);
 
+// Team Directory
+export const getTeamDirectory = () => client.get('/team-directory/');
+export const createTeamMember = (data) => client.post('/team-directory/', data);
+export const updateTeamMember = (id, data) => client.put(`/team-directory/${id}/`, data);
+export const deleteTeamMember = (id) => client.delete(`/team-directory/${id}/`);
+
 export default client;

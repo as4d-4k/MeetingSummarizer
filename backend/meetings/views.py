@@ -14,12 +14,13 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 
-from .models import Meeting, ActionItem, Speaker, LiveTranscriptSegment, SpeakerAnalysis
+from .models import Meeting, ActionItem, Speaker, LiveTranscriptSegment, SpeakerAnalysis, TeamDirectory
 from .serializers import (
     MeetingListSerializer,
     MeetingDetailSerializer,
     MeetingCreateSerializer,
     ActionItemSerializer,
+    TeamDirectorySerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -538,3 +539,24 @@ def internal_broadcast_view(request):
     from meetings.broadcast import broadcast_to_meeting_direct
     broadcast_to_meeting_direct(meeting_id, event_type, data or {})
     return Response({"status": "ok"})
+
+
+class TeamDirectoryViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for the logged-in user's Team Directory.
+    GET    /api/team-directory/         → list all entries
+    POST   /api/team-directory/         → create new entry
+    PUT    /api/team-directory/{id}/    → update entry
+    DELETE /api/team-directory/{id}/    → delete entry
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = TeamDirectorySerializer
+    search_fields = ["name", "email"]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    ordering = ["name"]
+
+    def get_queryset(self):
+        return TeamDirectory.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
