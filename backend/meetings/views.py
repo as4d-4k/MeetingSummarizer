@@ -602,6 +602,29 @@ class TeamDirectoryViewSet(viewsets.ModelViewSet):
         total_words = sum(s.word_count for s in scores)
         total_talk_time = sum(s.talk_time_seconds for s in scores)
 
+        # ── Leaderboard: rank this member among all team members ──
+        all_members = TeamDirectory.objects.filter(user=request.user)
+        leaderboard = []
+        for m in all_members:
+            m_scores = UserMeetingScore.objects.filter(team_member=m)
+            m_agg = m_scores.aggregate(avg=Avg("performance_score"))
+            m_avg = round(m_agg["avg"] or 0, 1)
+            leaderboard.append({
+                "id": m.id,
+                "name": m.name,
+                "score": m_avg,
+                "meetings": m_scores.count(),
+            })
+        leaderboard.sort(key=lambda x: x["score"], reverse=True)
+
+        # Find this member's rank
+        my_rank = next((i + 1 for i, lb in enumerate(leaderboard) if lb["id"] == member.id), 0)
+
+        # Best / worst scores
+        score_values = [s.performance_score for s in scores]
+        best_score = max(score_values) if score_values else 0
+        worst_score = min(score_values) if score_values else 0
+
         return Response({
             "member": {
                 "id": member.id,
@@ -609,11 +632,17 @@ class TeamDirectoryViewSet(viewsets.ModelViewSet):
                 "email": member.email,
                 "slack_id": member.slack_id,
                 "key": member.key,
+                "created_at": member.created_at.isoformat(),
             },
             "overall_score": overall_score,
             "total_meetings": total_meetings,
             "total_words": total_words,
             "total_talk_time": total_talk_time,
+            "best_score": round(best_score, 1),
+            "worst_score": round(worst_score, 1),
+            "rank": my_rank,
+            "leaderboard": leaderboard[:10],
             "meeting_history": meeting_history,
         })
+
 
