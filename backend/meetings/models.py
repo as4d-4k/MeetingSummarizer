@@ -300,6 +300,12 @@ class SpeakerAnalysis(models.Model):
         return f"{self.speaker.name} — score={self.performance_score} — Meeting {self.meeting_id}"
 
 
+import random
+import string
+
+def generate_10_digit_key():
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+
 class TeamDirectory(models.Model):
     """
     Maps participant names/emails to notification channels.
@@ -316,6 +322,7 @@ class TeamDirectory(models.Model):
     name = models.CharField("Display Name", max_length=150)
     email = models.EmailField("Email Address", blank=True, default="")
     slack_id = models.CharField("Slack User ID", max_length=50, blank=True, default="")
+    key = models.CharField("Key", max_length=10, blank=True, default=generate_10_digit_key)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -327,3 +334,46 @@ class TeamDirectory(models.Model):
 
     def __str__(self):
         return f"{self.name} <{self.email}> (slack: {self.slack_id or '—'})"
+
+
+class UserMeetingScore(models.Model):
+    """
+    Per-meeting performance record for a TeamDirectory member.
+    Created by Celery after each meeting completes.
+    Powers the profile page: overall score, monthly graph, sentiment trends.
+    """
+
+    team_member = models.ForeignKey(
+        TeamDirectory,
+        on_delete=models.CASCADE,
+        related_name="meeting_scores",
+    )
+    meeting = models.ForeignKey(
+        Meeting,
+        on_delete=models.CASCADE,
+        related_name="participant_scores",
+    )
+
+    # Performance score (0-100) from the meeting's speaker analysis
+    performance_score = models.FloatField("Performance Score", default=0)
+
+    # Sentiment breakdown (counts of each sentiment in the meeting)
+    sentiment_positive = models.PositiveIntegerField("Positive Segments", default=0)
+    sentiment_neutral = models.PositiveIntegerField("Neutral Segments", default=0)
+    sentiment_negative = models.PositiveIntegerField("Concern Segments", default=0)
+
+    # Summary of this person's contribution in the meeting
+    contribution_summary = models.TextField("Contribution Summary", blank=True, default="")
+    word_count = models.PositiveIntegerField("Words Spoken", default=0)
+    talk_time_seconds = models.PositiveIntegerField("Talk Time (s)", default=0)
+
+    meeting_date = models.DateTimeField("Meeting Date")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "user_meeting_scores"
+        unique_together = ["team_member", "meeting"]
+        ordering = ["-meeting_date"]
+
+    def __str__(self):
+        return f"{self.team_member.name} — {self.performance_score}/100 — {self.meeting}"

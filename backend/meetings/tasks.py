@@ -196,7 +196,69 @@ def flush_single_speaker(self, meeting_id: int, speaker_id: int, speaker_name: s
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Original tasks — UNCHANGED
+# Async bot join — runs the blocking Recall.ai API call off the request thread
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=5)
+def dispatch_bot_join(self, meeting_id: int, live_language: str = "English"):
+    """
+    Fire-and-forget task that makes the blocking Recall.ai create_bot API call.
+    The view has already set status=BOT_JOINING and returned to the frontend.
+    On success: saves bot_id and starts poll_bot_status.
+    On failure: sets status=FAILED and broadcasts to frontend.
+    """
+    from meetings.models import Meeting
+    from meetings.services import RecallService, RecallServiceError
+
+    try:
+        meeting = Meeting.objects.get(pk=meeting_id)
+    except Meeting.DoesNotExist:
+        return {"error": "Meeting not found"}
+
+    # Guard: only proceed if still BOT_JOINING (user may have cancelled)
+    if meeting.status != Meeting.Status.BOT_JOINING:
+        logger.info("dispatch_bot_join: meeting %d status=%s, aborting", meeting_id, meeting.status)
+        return {"status": "aborted"}
+
+    try:
+        recall_svc = RecallService()
+        bot_data = recall_svc.create_bot(
+            meeting_url=meeting.meeting_url,
+            bot_name="Jhony jee ",
+            live_language=live_language,
+        )
+
+        bot_id = bot_data.get("id", "")
+        if not bot_id:
+            raise RecallServiceError("Recall.ai returned no bot ID")
+
+        meeting.bot_id = bot_id
+        meeting.save(update_fields=["bot_id"])
+
+        logger.info("dispatch_bot_join: bot %s created for meeting %d", bot_id, meeting_id)
+
+        # Start polling for bot status transitions (joining → recording → done)
+        poll_bot_status.apply_async(args=[meeting_id], countdown=10)
+
+        return {"status": "ok", "bot_id": bot_id}
+
+    except (RecallServiceError, Exception) as exc:
+        logger.error("dispatch_bot_join FAILED for meeting %d: %s", meeting_id, exc)
+
+        # Mark meeting as failed so the UI updates
+        meeting.status = Meeting.Status.FAILED
+        meeting.save(update_fields=["status"])
+        broadcast_to_meeting(meeting_id, "status_change", {"status": "failed"})
+
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+
+        return {"status": "error", "error": str(exc)}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Original tasks
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
@@ -338,6 +400,9 @@ def process_meeting_pipeline(self, meeting_id: int):
         # ── Trigger async notification distribution ──
         distribute_action_items.apply_async(args=[meeting_id], countdown=5)
 
+        # ── Compute per-participant scores for profile pages ──
+        compute_participant_scores.apply_async(args=[meeting_id], countdown=10)
+
         logger.info("═══ Post-meeting pipeline complete for Meeting %d ═══", meeting_id)
         return {"meeting_id": meeting_id, "status": "completed"}
 
@@ -475,6 +540,123 @@ def distribute_action_items(self, meeting_id: int):
         "Action item distribution for meeting %d: %s", meeting_id, results
     )
 
+
+@shared_task
+def compute_participant_scores(meeting_id: int):
+    """
+    After meeting completes: match speakers to TeamDirectory users,
+    compute per-meeting performance scores & sentiment breakdowns,
+    and create UserMeetingScore records for the profile page.
+    """
+    from meetings.models import Meeting, Speaker, SpeakerAnalysis, TeamDirectory, UserMeetingScore
+
+    try:
+        meeting = Meeting.objects.get(pk=meeting_id)
+    except Meeting.DoesNotExist:
+        return
+
+    speakers = Speaker.objects.filter(meeting=meeting)
+    if not speakers.exists():
+        logger.info("compute_participant_scores: no speakers for meeting %d", meeting_id)
+        return
+
+    # Get all team directory entries for this user
+    directory = TeamDirectory.objects.filter(user=meeting.user)
+    if not directory.exists():
+        logger.info("compute_participant_scores: empty directory for user %s", meeting.user)
+        return
+
+    # Build name lookup: lowercase normalized → TeamDirectory entry
+    dir_lookup = {}
+    for entry in directory:
+        dir_lookup[entry.name.strip().lower()] = entry
+        # Also index by first name for partial matches
+        parts = entry.name.strip().split()
+        if len(parts) > 1:
+            dir_lookup[parts[0].lower()] = entry
+
+    matched = 0
+    for speaker in speakers:
+        # ── Fuzzy name matching ──
+        team_member = _match_speaker_to_directory(speaker.name, dir_lookup)
+        if not team_member:
+            logger.debug("No directory match for speaker '%s'", speaker.name)
+            continue
+
+        # ── Compute scores from SpeakerAnalysis records ──
+        analyses = SpeakerAnalysis.objects.filter(meeting=meeting, speaker=speaker)
+
+        if analyses.exists():
+            scores = [a.performance_score for a in analyses if a.performance_score is not None]
+            avg_score = sum(scores) / len(scores) if scores else 0
+
+            sent_pos = analyses.filter(sentiment="positive").count()
+            sent_neu = analyses.filter(sentiment="neutral").count()
+            sent_neg = analyses.filter(sentiment="negative").count()
+
+            # Build contribution summary from analyses
+            summaries = [a.summary for a in analyses if a.summary]
+            contribution = " ".join(summaries)[:500]
+        else:
+            # Fallback: use speaker-level data
+            avg_score = speaker.performance_score or 0
+            sent_pos = 1 if speaker.sentiment == "positive" else 0
+            sent_neu = 1 if speaker.sentiment == "neutral" else 0
+            sent_neg = 1 if speaker.sentiment == "negative" else 0
+            contribution = speaker.last_quote or ""
+
+        # ── Create or update the score record ──
+        UserMeetingScore.objects.update_or_create(
+            team_member=team_member,
+            meeting=meeting,
+            defaults={
+                "performance_score": round(avg_score, 1),
+                "sentiment_positive": sent_pos,
+                "sentiment_neutral": sent_neu,
+                "sentiment_negative": sent_neg,
+                "contribution_summary": contribution,
+                "word_count": speaker.word_count,
+                "talk_time_seconds": speaker.talk_time_seconds,
+                "meeting_date": meeting.date,
+            },
+        )
+        matched += 1
+        logger.info(
+            "Score recorded: %s → %s (score=%.1f) in meeting %d",
+            speaker.name, team_member.name, avg_score, meeting_id
+        )
+
+    logger.info("compute_participant_scores: %d/%d speakers matched for meeting %d", matched, speakers.count(), meeting_id)
+
+
+def _match_speaker_to_directory(speaker_name: str, dir_lookup: dict):
+    """
+    Match a speaker's display name to a TeamDirectory entry.
+    Handles: exact match, case-insensitive, first-name, bracket-stripped.
+    """
+    name = speaker_name.strip()
+
+    # Strip bracketed suffixes like "Muhammad Umer [slack:U123]"
+    import re
+    clean_name = re.sub(r'\s*\[.*?\]\s*', '', name).strip()
+
+    # 1. Exact match (case-insensitive)
+    if clean_name.lower() in dir_lookup:
+        return dir_lookup[clean_name.lower()]
+
+    # 2. Try first name only
+    first = clean_name.split()[0].lower() if clean_name else ""
+    if first and first in dir_lookup:
+        return dir_lookup[first]
+
+    # 3. Try substring match (speaker name contains directory name or vice versa)
+    for key, entry in dir_lookup.items():
+        if key in clean_name.lower() or clean_name.lower() in key:
+            return entry
+
+    return None
+
+
 @shared_task
 def poll_live_transcript(meeting_id: int, bot_id: str, last_segment_index: int = 0):
     """
@@ -609,7 +791,7 @@ def poll_live_transcript(meeting_id: int, bot_id: str, last_segment_index: int =
 
 @shared_task
 def poll_bot_status(meeting_id: int):
-    """Poll Recall.ai bot status — unchanged from original."""
+    """Poll Recall.ai bot status until meeting ends."""
     from meetings.models import Meeting
     from meetings.services import RecallService
 
@@ -618,7 +800,10 @@ def poll_bot_status(meeting_id: int):
     except Meeting.DoesNotExist:
         return
 
-    if meeting.status in (Meeting.Status.COMPLETED, Meeting.Status.FAILED):
+    # ── Stop polling if meeting has already moved past live ──
+    # PROCESSING means end-bot was clicked or 'done' was already handled.
+    if meeting.status in (Meeting.Status.COMPLETED, Meeting.Status.FAILED, Meeting.Status.PROCESSING):
+        logger.info("poll_bot_status: meeting %d status=%s, stopping poll", meeting_id, meeting.status)
         return
 
     if not meeting.bot_id:
@@ -641,37 +826,32 @@ def poll_bot_status(meeting_id: int):
                     broadcast_to_meeting(meeting_id, "status_change", {"status": "in_progress"})
 
                     # ── Start live transcription polling ──────────────────
-                    # Use Azure Speech if configured (better Urdu support),
-                    # otherwise fall back to Gladia/Recall transcript polling.
-                    if settings.AZURE_SPEECH_KEY:
-                        logger.info("Starting Azure audio polling for meeting %d", meeting_id)
-                        poll_audio_chunk.apply_async(
-                            args=[meeting_id, meeting.bot_id, 0],
-                            countdown=30,
-                        )
-                    else:
-                        logger.info("Starting Gladia transcript polling for meeting %d", meeting_id)
-                        poll_live_transcript.apply_async(
-                            args=[meeting_id, meeting.bot_id, 0],
-                            countdown=15,
-                        )
+                    # Gladia webhooks power the live dashboard in real-time.
+                    # Azure runs post-meeting on the final MP4 for superior accuracy.
+                    logger.info("Starting Gladia live transcript polling for meeting %d", meeting_id)
+                    poll_live_transcript.apply_async(
+                        args=[meeting_id, meeting.bot_id, 0],
+                        countdown=15,
+                    )
 
             elif latest_status == "done":
                 # ── Bot finished recording ─────────────────────────────────
-                # Do NOT set meeting.status = PROCESSING here.
-                # poll_audio_chunk may still be queued for its final Azure pass
-                # (warmup detect + language lock). Setting PROCESSING now blocks
-                # it — it sees 'processing' and exits in 0.045s before Azure runs.
-                #
-                # Strategy: keep status IN_PROGRESS, give poll_audio_chunk 90s
-                # to complete its Azure run, then start post-meeting pipeline.
-                # process_meeting_pipeline sets PROCESSING itself when it starts.
+                # Re-read from DB to check if end_bot already set PROCESSING
+                meeting.refresh_from_db()
+                if meeting.status == Meeting.Status.PROCESSING:
+                    # end_bot already handled this — don't schedule a duplicate pipeline
+                    logger.info("poll_bot_status: meeting %d already PROCESSING (end-bot), skipping duplicate pipeline", meeting_id)
+                    return
+
+                meeting.status = Meeting.Status.PROCESSING
+                meeting.save(update_fields=["status"])
+                buffer_manager.deactivate_meeting(meeting_id)
                 broadcast_to_meeting(
                     meeting_id, "status_change", {"status": "processing"}
                 )
                 process_meeting_pipeline.apply_async(
                     args=[meeting_id],
-                    countdown=90,   # 90s window for final Azure transcription
+                    countdown=30,
                 )
                 return
 
@@ -699,26 +879,34 @@ def _fetch_transcript(meeting) -> str:
     if not meeting.bot_id:
         return meeting.full_transcript
 
-    # ── Attempt 1 (BEST): Use LiveTranscriptSegments already in DB ──
-    # These were captured in real-time during the meeting via Azure Speech
-    # or Recall polling — highest quality, no hallucination.
-    live_segments = LiveTranscriptSegment.objects.filter(
-        meeting=meeting
-    ).select_related("speaker").order_by("start_time")
+    # ── Attempt 1: Use LiveTranscriptSegments already in DB ──
+    # These were captured in real-time via Gladia webhooks.
+    # If Azure is configured, we SKIP these (Gladia is lower quality)
+    # and fall through to Attempt 3 which downloads the final MP4
+    # and runs it through Azure Speech with hint tables + diarization.
+    if not getattr(settings, 'AZURE_SPEECH_KEY', None):
+        live_segments = LiveTranscriptSegment.objects.filter(
+            meeting=meeting
+        ).select_related("speaker").order_by("start_time")
 
-    if live_segments.exists():
+        if live_segments.exists():
+            logger.info(
+                "Assembling transcript from %d Gladia live segments for meeting %d",
+                live_segments.count(), meeting.id
+            )
+            lines = []
+            for seg in live_segments:
+                if seg.speaker:
+                    speaker_label = f"{seg.speaker.name} (Speaker ID: {seg.speaker.id})"
+                else:
+                    speaker_label = "Unknown"
+                lines.append(f"[{speaker_label}]: {seg.text}")
+            return "\n".join(lines)
+    else:
         logger.info(
-            "Assembling transcript from %d live segments for meeting %d",
-            live_segments.count(), meeting.id
+            "Azure configured — skipping Gladia segments for meeting %d, will use Azure on final MP4",
+            meeting.id
         )
-        lines = []
-        for seg in live_segments:
-            if seg.speaker:
-                speaker_label = f"{seg.speaker.name} (Speaker ID: {seg.speaker.id})"
-            else:
-                speaker_label = "Unknown"
-            lines.append(f"[{speaker_label}]: {seg.text}")
-        return "\n".join(lines)
 
     recall_svc = RecallService()
     transcription_svc = TranscriptionService()
@@ -887,27 +1075,10 @@ def poll_audio_chunk(meeting_id: int, bot_id: str, last_segment_count: int = 0):
     try:
         # ── Get recording URL from Recall.ai ─────────────────────────────────
         recall_svc = RecallService()
-        bot_data = recall_svc.get_bot_status(bot_id)
-        recordings = bot_data.get("recordings", [])
-
-        if not recordings:
-            # No recording yet — try again in 30s
-            poll_audio_chunk.apply_async(
-                args=[meeting_id, bot_id, last_segment_count],
-                countdown=30,
-            )
-            return
-
-        # Get download URL
-        recording_url = None
-        for rec in recordings:
-            media = rec.get("media_shortcuts", {})
-            url = media.get("video_mixed", {}).get("data", {}).get("download_url")
-            if url:
-                recording_url = url
-                break
+        recording_url = recall_svc.get_recording_url(bot_id)
 
         if not recording_url:
+            logger.warning("poll_audio_chunk: no recording_url yet for meeting %d, retrying in 30s", meeting_id)
             poll_audio_chunk.apply_async(
                 args=[meeting_id, bot_id, last_segment_count],
                 countdown=30,

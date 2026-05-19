@@ -80,5 +80,7 @@ export const getTeamDirectory = () => client.get('/team-directory/');
 export const createTeamMember = (data) => client.post('/team-directory/', data);
 export const updateTeamMember = (id, data) => client.put(`/team-directory/${id}/`, data);
 export const deleteTeamMember = (id) => client.delete(`/team-directory/${id}/`);
+export const sendTeamMemberCredentials = (id) => client.post(`/team-directory/${id}/send-credentials/`);
+export const getTeamMemberProfile = (id) => client.get(`/team-directory/${id}/profile/`);
 
 export default client;

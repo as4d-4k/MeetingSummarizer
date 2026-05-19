@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { getTeamDirectory, createTeamMember, updateTeamMember, deleteTeamMember } from '../api/client';
+import { useNavigate } from 'react-router-dom';
+import { getTeamDirectory, createTeamMember, updateTeamMember, deleteTeamMember, sendTeamMemberCredentials } from '../api/client';
 import './teamDirectory.css';
 
 export default function TeamDirectory() {
@@ -10,6 +11,7 @@ export default function TeamDirectory() {
   const [searchQuery, setSearchQuery] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [toast, setToast] = useState(null);
+  const navigate = useNavigate();
 
   const [form, setForm] = useState({ name: '', email: '', slack_id: '' });
 
@@ -65,7 +67,13 @@ export default function TeamDirectory() {
       fetchMembers();
     } catch (err) {
       const detail = err.response?.data;
-      const msg = typeof detail === 'object' ? Object.values(detail).flat().join(', ') : 'Something went wrong';
+      let msg = 'Something went wrong';
+      if (detail) {
+        if (detail.email) msg = Array.isArray(detail.email) ? detail.email[0] : detail.email;
+        else if (detail.slack_id) msg = Array.isArray(detail.slack_id) ? detail.slack_id[0] : detail.slack_id;
+        else if (typeof detail === 'object') msg = Object.values(detail).flat().join(', ');
+        else if (typeof detail === 'string') msg = detail;
+      }
       showToast(msg, 'error');
     }
   };
@@ -78,6 +86,15 @@ export default function TeamDirectory() {
       fetchMembers();
     } catch (err) {
       showToast('Failed to delete member', 'error');
+    }
+  };
+
+  const handleSendMail = async (member) => {
+    try {
+      await sendTeamMemberCredentials(member.id);
+      showToast(`Login credentials sent to ${member.name}`);
+    } catch (err) {
+      showToast('Failed to send credentials email', 'error');
     }
   };
 
@@ -224,12 +241,29 @@ export default function TeamDirectory() {
                       {member.slack_id}
                     </span>
                   )}
-                  {!member.email && !member.slack_id && (
+                  {member.key && (
+                    <span className="td-channel" style={{ background: 'rgba(251,191,36,0.1)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.2)' }}>
+                      🔑 {member.key}
+                    </span>
+                  )}
+                  {!member.email && !member.slack_id && !member.key && (
                     <span className="td-channel td-channel-none">No contact info</span>
                   )}
                 </div>
               </div>
               <div className="td-member-actions">
+                <button className="td-action-btn" onClick={() => navigate(`/team/${member.id}`)} title="View Profile" style={{ color: '#00C896', background: 'rgba(0, 200, 150, 0.1)' }}>
+                  <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </button>
+                {member.email && (
+                  <button className="td-action-btn" onClick={() => handleSendMail(member)} title="Send Login Credentials" style={{ color: '#6366f1', background: 'rgba(99, 102, 241, 0.1)' }}>
+                    <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                )}
                 <button className="td-action-btn td-action-edit" onClick={() => handleOpenEdit(member)} title="Edit">
                   <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
@@ -300,6 +334,22 @@ export default function TeamDirectory() {
                   onChange={(e) => setForm({ ...form, slack_id: e.target.value })}
                 />
                 <span className="td-form-hint">Find this in Slack → Profile → More → Copy Member ID</span>
+              </div>
+              <div className="td-form-group">
+                <label>
+                  <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4v-3l8.44-8.44A6 6 0 0115 7h0z" />
+                  </svg>
+                  Login Key
+                </label>
+                <input
+                  type="text"
+                  value={editingMember ? editingMember.key : 'Generated automatically'}
+                  readOnly
+                  disabled
+                  style={{ opacity: 0.7 }}
+                />
+                <span className="td-form-hint">Used by the team member to view their dashboard</span>
               </div>
               <div className="td-modal-actions">
                 <button type="button" className="td-btn-cancel" onClick={handleCloseModal}>Cancel</button>

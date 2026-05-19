@@ -37,15 +37,13 @@ class RecallService:
         webhook_base = self._get_webhook_base()
 
         # Build Gladia language config based on chosen live_language
-        # KEY INSIGHT: To get Roman Urdu (Latin script output), we must NOT include "ur"
-        # because including "ur" forces Gladia to output Urdu script (اردو).
-        # Using English-only forces phonetic Latin transcription of Urdu sounds.
         language_map = {
             "English":          {"languages": ["en"],       "code_switching": False},
             "Urdu":             {"languages": ["ur"],       "code_switching": False},
             "Urdu-English Mix": {"languages": ["ur", "en"], "code_switching": True},
-            "Roman Urdu":       {"languages": ["en"],       "code_switching": False},  # English-only → Latin script
+            "Roman Urdu":       {"languages": ["en"],       "code_switching": False},
         }
+        
         lang_cfg = language_map.get(live_language, {"languages": ["ur", "en"], "code_switching": True})
 
         gladia_lang_config = {
@@ -54,7 +52,7 @@ class RecallService:
         if lang_cfg["code_switching"]:
             gladia_lang_config["code_switching"] = True
 
-        logger.info("Creating bot for %s | live_language=%s → Gladia=%s", meeting_url, live_language, gladia_lang_config)
+        logger.info("Creating bot for %s | live_language=%s → Gladia=%s (Azure runs separately in tasks.py)", meeting_url, live_language, gladia_lang_config)
 
         payload = {
             "meeting_url": meeting_url,

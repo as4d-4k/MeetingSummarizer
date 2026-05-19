@@ -193,16 +193,32 @@ export default function MeetingDetail() {
 
   const handleStartBot = async () => {
     setActionLoading('start-bot');
-    try { await startBot(id); fetchMeeting(); }
-    catch (err) { alert(err.response?.data?.error || 'Failed to start bot.'); }
-    finally { setActionLoading(''); }
+    // ── Optimistic update: instantly show "Bot Joining" ──
+    setMeeting(p => p ? { ...p, status: 'bot_joining' } : p);
+    try {
+      await startBot(id);
+      // API confirmed — status is already 'bot_joining' in DB + local state
+    } catch (err) {
+      // Revert to pending on failure
+      setMeeting(p => p ? { ...p, status: 'pending' } : p);
+      alert(err.response?.data?.error || 'Failed to start bot.');
+    } finally {
+      setActionLoading('');
+    }
   };
 
   const handleEndBot = async () => {
     setActionLoading('end-bot');
-    try { await endBot(id); fetchMeeting(); }
-    catch (err) { alert(err.response?.data?.error || 'Failed to end bot.'); }
-    finally { setActionLoading(''); }
+    try {
+      await endBot(id);
+      // Immediately lock status to 'processing' locally — don't re-fetch
+      // from DB (which could briefly show 'in_progress' during the race window).
+      setMeeting(p => p ? { ...p, status: 'processing' } : p);
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to end bot.');
+    } finally {
+      setActionLoading('');
+    }
   };
 
   const handleReprocess = async () => {

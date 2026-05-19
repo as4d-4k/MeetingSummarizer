@@ -60,9 +60,8 @@ class MeetingViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="start-bot")
     def start_bot(self, request, pk=None):
-        from .services import RecallService, RecallServiceError
-        from .tasks import poll_bot_status
-        from .transcript_buffer import buffer_manager
+        from .tasks import dispatch_bot_join
+        from .broadcast import broadcast_to_meeting
 
         meeting = self.get_object()
 
@@ -72,62 +71,44 @@ class MeetingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            recall_svc = RecallService()
-            live_language = getattr(meeting, 'live_language', 'English')
+        # ── Immediately lock status in DB — no blocking API calls ──
+        live_language = getattr(meeting, 'live_language', 'English')
+        transcription_mode = getattr(meeting, 'transcription_mode', 'auto')
+        hint_phrases = []
+        skip_warmup_secs = 0.0
 
-            # ── Load user language profile for hint/skip mode ──────────────────
-            transcription_mode = getattr(meeting, 'transcription_mode', 'auto')
-            hint_phrases       = []
-            skip_warmup_secs   = 0.0
+        if transcription_mode == 'hints':
+            try:
+                profile = request.user.language_profile
+                hint_phrases = profile.hint_phrases or []
+                logger.info("start_bot: %d hint phrases for meeting %d", len(hint_phrases), meeting.id)
+            except Exception:
+                logger.warning("No language profile for user %s", request.user.email)
+        elif transcription_mode == 'skip':
+            skip_warmup_secs = 8.0
 
-            if transcription_mode == 'hints':
-                # Use AI-generated hint table from user's language profile
-                try:
-                    profile      = request.user.language_profile
-                    hint_phrases = profile.hint_phrases or []
-                    logger.info(
-                        "start_bot: using %d hint phrases for meeting %d",
-                        len(hint_phrases), meeting.id,
-                    )
-                except Exception:
-                    logger.warning("No language profile found for user %s", request.user.email)
+        meeting.status = Meeting.Status.BOT_JOINING
+        meeting.save(update_fields=["status"])
 
-            elif transcription_mode == 'skip':
-                # Skip first 8 seconds so Azure can warm up and auto-detect language
-                skip_warmup_secs = 8.0
-                logger.info("start_bot: skip-warmup mode (%.0fs) for meeting %d", skip_warmup_secs, meeting.id)
+        # Broadcast immediately — frontend and all WS clients see BOT_JOINING now
+        broadcast_to_meeting(meeting.id, "status_change", {"status": "bot_joining"})
 
-            # Store on meeting so the processing pipeline can pick it up
-            meeting.hint_phrases     = hint_phrases
-            meeting.skip_warmup_secs = skip_warmup_secs
-            meeting.save(update_fields=[])
+        # ── Fire-and-forget: actual Recall.ai API call runs in Celery ──
+        dispatch_bot_join.apply_async(
+            args=[meeting.id, live_language],
+            countdown=0,
+        )
 
-            bot_data = recall_svc.create_bot(
-                meeting_url=meeting.meeting_url,
-                bot_name="Jhony jee ",
-                live_language=live_language,
-            )
-            meeting.bot_id = bot_data.get("id", "")
-            meeting.status = Meeting.Status.BOT_JOINING
-            meeting.save(update_fields=["bot_id", "status"])
-
-            poll_bot_status.apply_async(args=[meeting.id], countdown=15)
-
-            return Response(
-                {
-                    "message":            "Bot dispatched.",
-                    "bot_id":             meeting.bot_id,
-                    "status":             meeting.status,
-                    "transcription_mode": transcription_mode,
-                    "hints_loaded":       len(hint_phrases),
-                    "skip_warmup_secs":   skip_warmup_secs,
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        except RecallServiceError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(
+            {
+                "message":            "Bot dispatching…",
+                "status":             "bot_joining",
+                "transcription_mode": transcription_mode,
+                "hints_loaded":       len(hint_phrases),
+                "skip_warmup_secs":   skip_warmup_secs,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["post"], url_path="reprocess")
     def reprocess(self, request, pk=None):
@@ -164,10 +145,15 @@ class MeetingViewSet(viewsets.ModelViewSet):
             recall_svc = RecallService()
             recall_svc.leave_bot(meeting.bot_id)
 
-            # ── Update status immediately so the UI reflects the change ──
+            # ── Lock status to PROCESSING in the DB immediately ──
+            # This prevents poll_bot_status and frontend polling from
+            # reverting the status back to "in_progress".
             from .broadcast import broadcast_to_meeting
             from .transcript_buffer import buffer_manager
             from .tasks import process_meeting_pipeline
+
+            meeting.status = Meeting.Status.PROCESSING
+            meeting.save(update_fields=["status"])
 
             buffer_manager.deactivate_meeting(meeting.id)
             broadcast_to_meeting(meeting.id, "status_change", {"status": "processing"})
@@ -178,7 +164,7 @@ class MeetingViewSet(viewsets.ModelViewSet):
                 countdown=30,
             )
 
-            return Response({"message": "Bot is leaving. Processing will begin shortly."}, status=status.HTTP_200_OK)
+            return Response({"message": "Bot is leaving. Processing will begin shortly.", "status": "processing"}, status=status.HTTP_200_OK)
         except RecallServiceError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
@@ -560,3 +546,74 @@ class TeamDirectoryViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+    @action(detail=True, methods=["post"], url_path="send-credentials")
+    def send_credentials(self, request, pk=None):
+        member = self.get_object()
+        if not member.email:
+            return Response({"error": "This member does not have an email address."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        from meetings.services.notification_service import NotificationService
+        svc = NotificationService()
+        success = svc.send_credentials_email(
+            email=member.email,
+            name=member.name,
+            slack_id=member.slack_id,
+            key=member.key
+        )
+        if success:
+            return Response({"message": "Credentials sent successfully."})
+        return Response({"error": "Failed to send email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=["get"], url_path="profile")
+    def profile(self, request, pk=None):
+        """
+        GET /api/team-directory/{id}/profile/
+        Returns full profile data: info, overall score, meeting history with scores & sentiment.
+        """
+        from meetings.models import UserMeetingScore
+        from django.db.models import Avg
+
+        member = self.get_object()
+        scores = UserMeetingScore.objects.filter(team_member=member).order_by("meeting_date")
+
+        # Overall performance = rolling average of all meeting scores
+        agg = scores.aggregate(avg_score=Avg("performance_score"))
+        overall_score = round(agg["avg_score"] or 0, 1)
+
+        # Meeting history for graphs
+        meeting_history = []
+        for s in scores:
+            meeting_history.append({
+                "id": s.id,
+                "meeting_id": s.meeting_id,
+                "meeting_title": s.meeting.title or "Untitled Meeting",
+                "meeting_date": s.meeting_date.isoformat(),
+                "performance_score": s.performance_score,
+                "sentiment_positive": s.sentiment_positive,
+                "sentiment_neutral": s.sentiment_neutral,
+                "sentiment_negative": s.sentiment_negative,
+                "word_count": s.word_count,
+                "talk_time_seconds": s.talk_time_seconds,
+                "contribution_summary": s.contribution_summary,
+            })
+
+        total_meetings = scores.count()
+        total_words = sum(s.word_count for s in scores)
+        total_talk_time = sum(s.talk_time_seconds for s in scores)
+
+        return Response({
+            "member": {
+                "id": member.id,
+                "name": member.name,
+                "email": member.email,
+                "slack_id": member.slack_id,
+                "key": member.key,
+            },
+            "overall_score": overall_score,
+            "total_meetings": total_meetings,
+            "total_words": total_words,
+            "total_talk_time": total_talk_time,
+            "meeting_history": meeting_history,
+        })
+

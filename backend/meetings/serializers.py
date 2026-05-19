@@ -137,10 +137,35 @@ class TeamDirectorySerializer(serializers.ModelSerializer):
             "name",
             "email",
             "slack_id",
+            "key",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "key", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        user = request.user
+        email = attrs.get("email")
+        slack_id = attrs.get("slack_id")
+
+        instance_id = self.instance.id if self.instance else None
+
+        if email:
+            query = TeamDirectory.objects.filter(user=user, email=email)
+            if instance_id:
+                query = query.exclude(id=instance_id)
+            if query.exists():
+                raise serializers.ValidationError({"email": "This email already exists in your Team Directory."})
+
+        if slack_id:
+            query = TeamDirectory.objects.filter(user=user, slack_id=slack_id)
+            if instance_id:
+                query = query.exclude(id=instance_id)
+            if query.exists():
+                raise serializers.ValidationError({"slack_id": "This Slack ID already exists in your Team Directory."})
+
+        return attrs
 
     def create(self, validated_data):
         validated_data["user"] = self.context["request"].user

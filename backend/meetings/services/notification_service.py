@@ -230,3 +230,56 @@ class NotificationService:
                 exc,
             )
             return False
+
+    def send_credentials_email(self, email: str, name: str, slack_id: str, key: str) -> bool:
+        if not email:
+            return False
+            
+        subject = "Your MeetingIntel Profile Login Credentials"
+        
+        text_body = (
+            f"Hi {name},\n\n"
+            f"Your team profile has been created.\n"
+            f"Please use these credentials to log in and view your profile:\n\n"
+            f"Email: {email}\n"
+            f"Key: {key}\n\n"
+            f"IMPORTANT: To ensure your meeting stats are tracked correctly, please make sure your Zoom, Google Meet, or Microsoft Teams display name exactly matches the name registered in our system:\n"
+            f"Registered Display Name: {name}\n"
+            f"(You can change your display name from your respective platform's account settings.)\n\n"
+            f"— MeetingIntel"
+        )
+        
+        html_body = f"""
+        <div style="font-family: sans-serif; max-width: 500px; padding: 20px;">
+            <h2>Welcome to MeetingIntel</h2>
+            <p>Hi <strong>{name}</strong>,</p>
+            <p>Please use this key and your email to log in and see your profile:</p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">
+                <p><strong>Email:</strong> {email}</p>
+                <p><strong>Key:</strong> {key}</p>
+            </div>
+            
+            <div style="background: #fff3cd; color: #856404; padding: 15px; border-radius: 8px; margin-top: 20px; border: 1px solid #ffeeba;">
+                <h3 style="margin-top: 0; font-size: 16px;">⚠️ Important Note for Meeting Tracking</h3>
+                <p style="margin-bottom: 0;">To ensure your meeting stats and action items are tracked correctly, please make sure your <strong>Zoom, Google Meet, or Microsoft Teams</strong> display name exactly matches the name registered in our system:</p>
+                <p style="font-size: 18px; text-align: center; font-weight: bold; margin: 10px 0;">{name}</p>
+                <p style="margin-bottom: 0; font-size: 14px;"><em>(You can update your display name from your respective platform's account settings.)</em></p>
+            </div>
+            <p style="margin-top: 20px;"><em>— MeetingIntel</em></p>
+        </div>
+        """
+        
+        try:
+            send_mail(
+                subject=subject,
+                message=text_body,
+                from_email=self.from_email,
+                recipient_list=[email],
+                html_message=html_body,
+                fail_silently=False,
+            )
+            logger.info("Credentials email sent to %s (%s)", name, email)
+            return True
+        except Exception as exc:
+            logger.error("Failed to send credentials to %s: %s", email, exc)
+            return False

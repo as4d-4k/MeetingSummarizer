@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import MeetingDetail from './pages/MeetingDetail';
 import Admin from './pages/Admin';
 import TeamDirectory from './pages/TeamDirectory';
+import UserProfile from './pages/UserProfile';
 
 export default function App() {
   return (
@@ -56,6 +57,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Layout><TeamDirectory /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team/:id"
+            element={
+              <ProtectedRoute>
+                <Layout><UserProfile /></Layout>
               </ProtectedRoute>
             }
           />
