@@ -359,6 +359,7 @@ def recall_transcript_webhook(request):
     """
     from .broadcast import broadcast_to_meeting
     from .transcript_buffer import buffer_manager
+    from .utils.transliterate import transliterate_mixed
 
     root_data = request.data
     event_type = root_data.get("event", "")
@@ -384,6 +385,13 @@ def recall_transcript_webhook(request):
 
     if not text and words:
         text = " ".join(w.get("text", "") for w in words).strip()
+
+    # ── Transliterate: Convert any Urdu-script text to Roman Urdu ──
+    # Gladia with code_switching outputs Urdu in Arabic script (اردو).
+    # This converts it to Latin characters (Roman Urdu) so the live
+    # feed shows phonetic output like "Me laptop ka istemaal kr raha hu"
+    # instead of "میں لیپ ٹاپ کا استمال کر رہا ہوں".
+    text = transliterate_mixed(text)
 
     if not bot_id or not text:
         return Response({"status": "ok", "note": "empty"})

@@ -463,12 +463,50 @@ def distribute_action_items(self, meeting_id: int):
                 speaker_name = speaker.name
                 email = speaker.email or ""
 
-        # Fallback: look up in TeamDirectory
+        # Fallback: look up in TeamDirectory (fuzzy match)
+        # Transcription providers often mangle names (e.g. "Slaxky" → "Slasky"),
+        # so we use similarity matching instead of exact match.
         if not email or not slack_id:
+            from difflib import SequenceMatcher
+
+            directory_entry = None
+
+            # Try exact match first (fastest)
             directory_entry = TeamDirectory.objects.filter(
                 user=meeting.user,
                 name__iexact=speaker_name,
             ).first()
+
+            # If no exact match, try fuzzy match
+            if not directory_entry and speaker_name:
+                all_entries = TeamDirectory.objects.filter(user=meeting.user)
+                best_match = None
+                best_ratio = 0.0
+
+                speaker_lower = speaker_name.lower().strip()
+
+                for entry in all_entries:
+                    entry_lower = entry.name.lower().strip()
+
+                    # Check contains match (e.g. "Slaxky" in "Muhammad Slaxky")
+                    if speaker_lower in entry_lower or entry_lower in speaker_lower:
+                        best_match = entry
+                        best_ratio = 1.0
+                        break
+
+                    # Fuzzy similarity
+                    ratio = SequenceMatcher(None, speaker_lower, entry_lower).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_match = entry
+
+                # Accept if similarity >= 60%
+                if best_match and best_ratio >= 0.6:
+                    directory_entry = best_match
+                    logger.info(
+                        "Fuzzy matched '%s' → '%s' (%.0f%% similarity)",
+                        speaker_name, best_match.name, best_ratio * 100,
+                    )
 
             if directory_entry:
                 email = email or directory_entry.email
