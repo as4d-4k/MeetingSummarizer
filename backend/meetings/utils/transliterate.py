@@ -1,11 +1,13 @@
 """
 meetings/utils/transliterate.py
 ─────────────────────────────────
-Converts Urdu (Arabic-script) text to Roman Urdu (Latin script).
+Converts Urdu (Arabic-script) AND Hindi (Devanagari) text to Roman Urdu.
 
-Used in the real-time transcript webhook to ensure all live output
-is displayed in Latin characters — English stays English, Urdu becomes
-phonetic Roman Urdu.
+Deepgram with language="multi" may output Urdu speech as:
+  - Arabic/Nastaliq script (correct Urdu)
+  - Devanagari script (misidentified as Hindi)
+Both are converted to Roman Urdu (Latin characters).
+English text passes through unchanged.
 
 This is a rule-based transliteration (no API calls, runs in microseconds)
 suitable for real-time streaming.
@@ -241,13 +243,95 @@ _CHAR_MAP = {
     "\u200d": "",  # ZWJ
 }
 
+# ── Devanagari (Hindi) → Roman Urdu mapping ──────────────────────────────────
+# Deepgram's "multi" mode sometimes outputs Urdu speech as Hindi/Devanagari.
+_DEVANAGARI_WORD_MAP = {
+    "मैं": "mein", "हम": "hum", "तुम": "tum", "आप": "aap",
+    "वो": "woh", "यह": "yeh", "कौन": "kaun", "क्या": "kya",
+    "कहाँ": "kahan", "कब": "kab", "क्यों": "kyun", "कैसे": "kaise",
+    "कुछ": "kuch", "सब": "sab",
+    "है": "hai", "हैं": "hain", "हूँ": "hun", "हूं": "hun",
+    "था": "tha", "थी": "thi", "थे": "thay",
+    "हो": "ho", "हुआ": "hua", "हुई": "hui",
+    "होगा": "hoga", "होगी": "hogi",
+    "कर": "kar", "करो": "karo", "करना": "karna",
+    "करता": "karta", "करती": "karti", "करते": "kartay",
+    "कर रहा": "kar raha", "कर रही": "kar rahi",
+    "बोल": "bol", "बोलो": "bolo", "बोलना": "bolna",
+    "देख": "dekh", "देखो": "dekho", "देखना": "dekhna",
+    "सुन": "sun", "सुनो": "suno", "सुनना": "sunna",
+    "चल": "chal", "चलो": "chalo", "चलना": "chalna",
+    "रहा": "raha", "रही": "rahi", "रहे": "rahay",
+    "सकता": "sakta", "सकती": "sakti", "सकते": "saktay",
+    "चाहता": "chahta", "चाहती": "chahti", "चाहिए": "chahiye",
+    "लगता": "lagta", "लगती": "lagti",
+    "मिला": "mila", "मिली": "mili",
+    "पता": "pata", "बताओ": "batao", "बताना": "batana",
+    "समझ": "samajh", "सोच": "soch",
+    "पढ़": "parh", "लिख": "likh",
+    "और": "aur", "या": "ya", "लेकिन": "lekin", "मगर": "magar",
+    "पर": "par", "का": "ka", "की": "ki", "के": "ke",
+    "को": "ko", "से": "se", "ने": "ne",
+    "पहले": "pehle", "बाद": "baad", "अभी": "abhi", "अब": "ab",
+    "फिर": "phir", "भी": "bhi", "नहीं": "nahi", "हाँ": "haan",
+    "जी": "ji", "ठीक": "theek", "अच्छा": "acha",
+    "बहुत": "bohot", "ज़्यादा": "zyada", "कम": "kam",
+    "बड़ा": "bara", "छोटा": "chhota", "नया": "naya",
+    "लोग": "log", "आदमी": "aadmi", "घर": "ghar",
+    "दिन": "din", "रात": "raat", "वक़्त": "waqt", "काम": "kaam",
+    "बात": "baat", "तरह": "tarah", "साथ": "saath",
+    "लिए": "liye", "वाला": "wala", "वाली": "wali", "वाले": "walay",
+    "इस्तेमाल": "istemaal", "लैपटॉप": "laptop",
+    "कंप्यूटर": "computer", "मोबाइल": "mobile",
+    "फ़ोन": "phone", "वीडियो": "video",
+    "मीटिंग": "meeting", "प्रोजेक्ट": "project",
+}
+
+_DEVANAGARI_CHAR_MAP = {
+    "अ": "a", "आ": "aa", "इ": "i", "ई": "ee", "उ": "u", "ऊ": "oo",
+    "ए": "e", "ऐ": "ai", "ओ": "o", "औ": "au", "अं": "an", "अः": "ah",
+    "क": "k", "ख": "kh", "ग": "g", "घ": "gh", "ङ": "n",
+    "च": "ch", "छ": "chh", "ज": "j", "झ": "jh", "ञ": "n",
+    "ट": "t", "ठ": "th", "ड": "d", "ढ": "dh", "ण": "n",
+    "त": "t", "थ": "th", "द": "d", "ध": "dh", "न": "n",
+    "प": "p", "फ": "ph", "ब": "b", "भ": "bh", "म": "m",
+    "य": "y", "र": "r", "ल": "l", "व": "w", "श": "sh",
+    "ष": "sh", "स": "s", "ह": "h",
+    "क़": "q", "ख़": "kh", "ग़": "gh", "ज़": "z", "फ़": "f", "ड़": "r", "ढ़": "rh",
+    # Matras (vowel signs)
+    "ा": "a", "ि": "i", "ी": "ee", "ु": "u", "ू": "oo",
+    "े": "e", "ै": "ai", "ो": "o", "ौ": "au",
+    "ं": "n", "ँ": "n", "ः": "h",
+    "्": "",  # Halant — suppresses inherent vowel
+    "़": "",  # Nukta
+    # Numerals
+    "०": "0", "१": "1", "२": "2", "३": "3", "४": "4",
+    "५": "5", "६": "6", "७": "7", "८": "8", "९": "9",
+    # Punctuation
+    "।": ".", "?": "?",
+}
+
 # Regex to detect Urdu/Arabic script characters
 _URDU_RANGE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")
+# Regex to detect Devanagari (Hindi) script characters
+_DEVANAGARI_RANGE = re.compile(r"[\u0900-\u097F]")
+# Combined: either script
+_NON_LATIN_RANGE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF\u0900-\u097F]")
 
 
 def contains_urdu(text: str) -> bool:
     """Check if text contains any Urdu/Arabic-script characters."""
     return bool(_URDU_RANGE.search(text))
+
+
+def contains_devanagari(text: str) -> bool:
+    """Check if text contains any Devanagari (Hindi) script characters."""
+    return bool(_DEVANAGARI_RANGE.search(text))
+
+
+def contains_non_latin(text: str) -> bool:
+    """Check if text contains any non-Latin script (Urdu or Hindi)."""
+    return bool(_NON_LATIN_RANGE.search(text))
 
 
 def urdu_to_roman(text: str) -> str:
@@ -280,23 +364,51 @@ def urdu_to_roman(text: str) -> str:
     return result
 
 
+def devanagari_to_roman(text: str) -> str:
+    """
+    Transliterate Devanagari (Hindi) script text to Roman Urdu.
+
+    Deepgram's multi mode sometimes outputs Urdu speech as Hindi/Devanagari.
+    This converts it to the same Roman Urdu output as Arabic script.
+    """
+    if not contains_devanagari(text):
+        return text
+
+    result = text
+
+    # Replace individual Devanagari characters
+    for deva_char, roman_char in _DEVANAGARI_CHAR_MAP.items():
+        result = result.replace(deva_char, roman_char)
+
+    # Clean up remaining Devanagari characters
+    result = re.sub(r"[\u0900-\u097F]", "", result)
+
+    # Collapse multiple spaces
+    result = re.sub(r"\s+", " ", result).strip()
+
+    return result
+
+
 def transliterate_mixed(text: str) -> str:
     """
-    Smart transliteration for mixed Urdu-English text.
+    Smart transliteration for mixed Urdu/Hindi/English text.
 
-    1. First checks each word against a common-words dictionary
-    2. Falls back to character-by-character transliteration
+    1. If text is pure Latin (English) → return as-is (fast path)
+    2. For each word:
+       a. Check against Urdu word map (Arabic script)
+       b. Check against Hindi word map (Devanagari script)
+       c. Fall back to character-by-character transliteration
     3. Leaves English tokens untouched
     """
-    if not contains_urdu(text):
-        return text
+    if not contains_non_latin(text):
+        return text  # Pure English — pass through unchanged
 
     tokens = text.split()
     result_tokens = []
 
     for token in tokens:
-        if not contains_urdu(token):
-            # Already Latin script — keep as-is
+        # Already Latin script — keep as-is (English words)
+        if not contains_non_latin(token):
             result_tokens.append(token)
             continue
 
@@ -304,11 +416,18 @@ def transliterate_mixed(text: str) -> str:
         stripped = token.strip(".,!?;:\"'()[]{}")
         trailing = token[len(stripped):] if len(stripped) < len(token) else ""
 
-        # Check word lookup table first
+        # Check Urdu (Arabic script) word lookup table
         if stripped in _WORD_MAP:
             result_tokens.append(_WORD_MAP[stripped] + trailing)
-        else:
-            # Fall back to character-by-character transliteration
+        # Check Hindi (Devanagari) word lookup table
+        elif stripped in _DEVANAGARI_WORD_MAP:
+            result_tokens.append(_DEVANAGARI_WORD_MAP[stripped] + trailing)
+        # Fall back to character-by-character transliteration
+        elif contains_urdu(token):
             result_tokens.append(urdu_to_roman(token))
+        elif contains_devanagari(token):
+            result_tokens.append(devanagari_to_roman(token))
+        else:
+            result_tokens.append(token)
 
     return " ".join(result_tokens)

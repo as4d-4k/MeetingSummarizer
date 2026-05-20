@@ -36,17 +36,15 @@ class RecallService:
     def create_bot(self, meeting_url: str, bot_name: str = "m Abduallah", live_language: str = "English") -> dict:
         webhook_base = self._get_webhook_base()
 
-        # ── Gladia language config ──
-        # Use code_switching with both Urdu and English so Gladia
-        # accurately captures both languages. The transliteration layer
-        # in the webhook handler then converts any Arabic-script Urdu
-        # output to Roman Urdu (Latin characters) before displaying.
-        gladia_lang_config = {
-            "languages": ["ur", "en"],
-            "code_switching": True,
-        }
+        # ── Deepgram Nova-3 config ──
+        # Recall.ai natively supports Deepgram as a streaming provider.
+        # language: "multi" lets Deepgram detect English vs Urdu per segment.
+        # English speech → English text (pass-through).
+        # Urdu speech → may come as Arabic script OR Devanagari → transliteration
+        #   converts both to Roman Urdu in the webhook handler.
+        # smart_format: true adds auto-punctuation and formatting.
 
-        logger.info("Creating bot for %s | live_language=%s → Gladia=%s (Azure runs separately in tasks.py)", meeting_url, live_language, gladia_lang_config)
+        logger.info("Creating bot for %s | live_language=%s → Deepgram Nova-3 (multi)", meeting_url, live_language)
 
         payload = {
             "meeting_url": meeting_url,
@@ -54,8 +52,10 @@ class RecallService:
             "recording_config": {
                 "transcript": {
                     "provider": {
-                        "gladia_v2_streaming": {
-                            "language_config": gladia_lang_config
+                        "deepgram_streaming": {
+                            "model": "nova-3",
+                            "language": "multi",
+                            "smart_format": True
                         }
                     }
                 },

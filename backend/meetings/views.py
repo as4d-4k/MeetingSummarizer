@@ -386,11 +386,10 @@ def recall_transcript_webhook(request):
     if not text and words:
         text = " ".join(w.get("text", "") for w in words).strip()
 
-    # ── Transliterate: Convert any Urdu-script text to Roman Urdu ──
-    # Gladia with code_switching outputs Urdu in Arabic script (اردو).
-    # This converts it to Latin characters (Roman Urdu) so the live
-    # feed shows phonetic output like "Me laptop ka istemaal kr raha hu"
-    # instead of "میں لیپ ٹاپ کا استمال کر رہا ہوں".
+    # ── Transliterate: Convert Urdu/Hindi script → Roman Urdu ──
+    # Deepgram with language="multi" may output Urdu speech as:
+    #   - Arabic script (Urdu) or Devanagari (Hindi)
+    # Both are converted to Roman Urdu. English passes through unchanged.
     text = transliterate_mixed(text)
 
     if not bot_id or not text:
