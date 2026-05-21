@@ -83,4 +83,8 @@ export const deleteTeamMember = (id) => client.delete(`/team-directory/${id}/`);
 export const sendTeamMemberCredentials = (id) => client.post(`/team-directory/${id}/send-credentials/`);
 export const getTeamMemberProfile = (id) => client.get(`/team-directory/${id}/profile/`);
 
+// Team Auth (unauthenticated)
+export const teamLogin = (key) => client.post('/team-auth/login/', { key });
+export const teamForgotKey = (email) => client.post('/team-auth/forgot-key/', { email });
+
 export default client;

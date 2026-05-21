@@ -653,3 +653,117 @@ class TeamDirectoryViewSet(viewsets.ModelViewSet):
         })
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Team Member Auth (unauthenticated — key-based)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def team_login(request):
+    """
+    POST /api/team-auth/login/
+    Body: { "key": "abc123XYZ0" }
+    Returns the team member's profile data if key matches.
+    """
+    key = request.data.get("key", "").strip()
+    if not key:
+        return Response({"error": "Key is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        member = TeamDirectory.objects.get(key=key)
+    except TeamDirectory.DoesNotExist:
+        return Response({"error": "Invalid key. Please check and try again."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Build profile data (same as the profile endpoint)
+    from meetings.models import UserMeetingScore
+    from django.db.models import Avg
+
+    scores = UserMeetingScore.objects.filter(team_member=member).order_by("meeting_date")
+    agg = scores.aggregate(avg_score=Avg("performance_score"))
+    overall_score = round(agg["avg_score"] or 0, 1)
+
+    meeting_history = []
+    for s in scores:
+        meeting_history.append({
+            "id": s.id,
+            "meeting_id": s.meeting_id,
+            "meeting_title": s.meeting.title or "Untitled Meeting",
+            "meeting_date": s.meeting_date.isoformat(),
+            "performance_score": s.performance_score,
+            "sentiment_positive": s.sentiment_positive,
+            "sentiment_neutral": s.sentiment_neutral,
+            "sentiment_negative": s.sentiment_negative,
+            "word_count": s.word_count,
+            "talk_time_seconds": s.talk_time_seconds,
+            "contribution_summary": s.contribution_summary,
+        })
+
+    total_meetings = scores.count()
+    total_words = sum(s.word_count for s in scores)
+    total_talk_time = sum(s.talk_time_seconds for s in scores)
+
+    score_values = [s.performance_score for s in scores]
+    best_score = max(score_values) if score_values else 0
+    worst_score = min(score_values) if score_values else 0
+
+    return Response({
+        "member": {
+            "id": member.id,
+            "name": member.name,
+            "email": member.email,
+            "slack_id": member.slack_id,
+            "key": member.key,
+            "created_at": member.created_at.isoformat(),
+        },
+        "overall_score": overall_score,
+        "total_meetings": total_meetings,
+        "total_words": total_words,
+        "total_talk_time": total_talk_time,
+        "best_score": round(best_score, 1),
+        "worst_score": round(worst_score, 1),
+        "rank": 0,
+        "leaderboard": [],
+        "meeting_history": meeting_history,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def team_forgot_key(request):
+    """
+    POST /api/team-auth/forgot-key/
+    Body: { "email": "john@company.com" }
+    Generates a new key, saves it, and emails it to the user.
+    """
+    email = request.data.get("email", "").strip().lower()
+    if not email:
+        return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        member = TeamDirectory.objects.get(email__iexact=email)
+    except TeamDirectory.DoesNotExist:
+        return Response({"error": "No team member found with this email."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Generate new key
+    from meetings.models import generate_10_digit_key
+    new_key = generate_10_digit_key()
+    member.key = new_key
+    member.save(update_fields=["key"])
+
+    # Send email
+    try:
+        from meetings.services.notification_service import NotificationService
+        svc = NotificationService()
+        svc.send_credentials_email(
+            email=member.email,
+            name=member.name,
+            slack_id=member.slack_id,
+            key=new_key,
+        )
+        logger.info("Forgot key: new key sent to %s (%s)", member.name, member.email)
+    except Exception as exc:
+        logger.error("Failed to send forgot-key email: %s", exc)
+
+    return Response({
+        "message": f"A new key has been sent to {member.email}. Check your inbox.",
+    })

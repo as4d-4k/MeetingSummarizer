@@ -9,6 +9,7 @@ import MeetingDetail from './pages/MeetingDetail';
 import Admin from './pages/Admin';
 import TeamDirectory from './pages/TeamDirectory';
 import UserProfile from './pages/UserProfile';
+import TeamProfile from './pages/TeamProfile';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/team-profile" element={<TeamProfile />} />
 
           {/* Protected routes */}
           <Route

@@ -1,25 +1,202 @@
-Keep ngrok running in its own terminal — don't close it. You now need these terminals open simultaneously:
-TerminalCommand1
-ngrok.exe http 8000 ✅ already running
-python manage.py runserver
-celery -A config worker -l info --pool=solo
-celery -A config beat -l info
-npm run dev (in frontend folder)
+# Team Directory & User Profile — Feature Documentation
 
+## Overview
 
-No worries! Just reopen them one by one.
-
-**Open 4 separate PowerShell windows and run one command in each:**
+This document describes the **Team Directory** enhancements and the new **User Profile** system that links team members to their post-meeting performance data.
 
 ---
+
+## Features Added
+
+### 1. Auto-Generated Login Key
+
+When a new team member is created in the Team Directory, a **unique 10-character alphanumeric key** is automatically generated and stored.
+
+- **Model field:** `TeamDirectory.key` (auto-generated on creation, read-only)
+- **Purpose:** Used by team members to authenticate and view their personal dashboard
+- **Uniqueness:** Each key is randomly generated and unique per user
+- **Visible in:** Team Directory member cards (shown as 🔑 badge)
+
+### 2. Send Email Button (✉ per user block)
+
+Each team member card in the Team Directory has a **Send Credentials** button (envelope icon) that emails the member their login credentials.
+
+- **Button location:** Action buttons area of each member card (purple envelope icon)
+- **What it sends:** Name, Email, Slack ID, and Login Key
+- **Backend endpoint:** `POST /api/team-directory/{id}/send-credentials/`
+- **Condition:** Only appears if the member has an email address set
+
+### 3. View Profile Button (👤 per user block)
+
+Each team member card has a **View Profile** button (green person icon) that navigates to a detailed PUBG-inspired profile page.
+
+- **Button location:** First button in the action buttons area (green icon)
+- **Navigation:** Clicking navigates to `/team/{member_id}`
+- **Frontend route:** `/team/:id` → `UserProfile.jsx`
+
+### 4. User Profile Page (`/team/:id`)
+
+A game-inspired profile dashboard showing:
+
+| Section | Description |
+|---------|-------------|
+| **Hexagonal Avatar Banner** | Animated avatar with glowing rank badge (Bronze → Silver → Gold → Platinum → Diamond) |
+| **Season Pass XP Bar** | Progress bar showing advancement from current rank to next rank |
+| **K/D Style Stats** | Animated count-up numbers for Matches, Best Score, Worst Score, Rank, Words, Talk Time |
+| **Info Cards** | Email, Slack ID, Employee Key, Join Date with icons |
+| **Achievements** | 3D flip badges: First Blood, MVP, Clutch, Team Player, Legend |
+| **Performance Radar** | 5-axis radar chart: Participation, Clarity, Sentiment, Relevance, Engagement |
+| **Sparkline Trend** | Last 10 meetings score trend with 👑 crown on personal best |
+| **Sentiment Timeline** | Area chart with gradient fill (red → gray → green), clickable points showing transcript snippets |
+| **Recent Matches** | Game-history styled table with colored borders (green/amber/red) and hover animations |
+| **Team Leaderboard** | Ranked list of all team members with scores and rank badges |
+| **Streak Banner** | 🔥 animated banner if last 3 scores are improving |
+| **Confetti** | Fires on page load if user is Diamond rank |
+| **Sticky Float Card** | Bottom-right card showing rank emoji, name, score (collapses on mobile) |
+
+### 5. Post-Meeting Score Computation
+
+After every meeting completes, a Celery task automatically:
+
+1. **Matches speakers to Team Directory** using fuzzy name matching:
+   - Case-insensitive exact match
+   - First-name only match
+   - Bracket-stripped match (e.g., "John [slack:U123]" → "John")
+   - Substring match
+2. **Computes performance scores** from `SpeakerAnalysis` records
+3. **Stores sentiment breakdowns** (positive/neutral/negative counts)
+4. **Creates `UserMeetingScore` records** linked to both the team member and the meeting
+
+**Celery task:** `compute_participant_scores` (runs 10 seconds after meeting completion)
+
+---
+
+## Data Flow
+
+```
+Meeting Ends
+  └─→ process_meeting_pipeline (Celery)
+        ├─→ Transcription + Summary + Action Items
+        ├─→ distribute_action_items (5s delay)
+        └─→ compute_participant_scores (10s delay)
+              ├─→ Match speakers → TeamDirectory (fuzzy name matching)
+              ├─→ Aggregate SpeakerAnalysis scores & sentiments
+              └─→ Create/Update UserMeetingScore records
+                    └─→ Data available on Profile Page graphs
+```
+
+---
+
+## Database Model
+
+### `UserMeetingScore`
+| Field | Type | Description |
+|-------|------|-------------|
+| `team_member` | FK → TeamDirectory | The matched team member |
+| `meeting` | FK → Meeting | The meeting this score belongs to |
+| `performance_score` | Float | Score 0-100 |
+| `sentiment_positive` | Integer | Count of positive sentiment segments |
+| `sentiment_neutral` | Integer | Count of neutral sentiment segments |
+| `sentiment_negative` | Integer | Count of negative/concern sentiment segments |
+| `contribution_summary` | Text | Summary of member's contribution |
+| `word_count` | Integer | Total words spoken |
+| `talk_time_seconds` | Integer | Total speaking time |
+| `meeting_date` | DateTime | When the meeting occurred |
+
+### `TeamDirectory.key`
+| Field | Type | Description |
+|-------|------|-------------|
+| `key` | CharField(10) | Auto-generated 10-character alphanumeric login key |
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/team-directory/` | List all team members |
+| `POST` | `/api/team-directory/` | Create member (key auto-generated) |
+| `PUT` | `/api/team-directory/{id}/` | Update member |
+| `DELETE` | `/api/team-directory/{id}/` | Delete member |
+| `POST` | `/api/team-directory/{id}/send-credentials/` | Email login credentials |
+| `GET` | `/api/team-directory/{id}/profile/` | Full profile with scores, leaderboard, meeting history |
+
+### Profile Response Shape
+```json
+{
+  "member": { "id", "name", "email", "slack_id", "key", "created_at" },
+  "overall_score": 72.5,
+  "total_meetings": 12,
+  "total_words": 4500,
+  "total_talk_time": 1800,
+  "best_score": 95.0,
+  "worst_score": 42.0,
+  "rank": 2,
+  "leaderboard": [{ "id", "name", "score", "meetings" }],
+  "meeting_history": [{
+    "meeting_id", "meeting_title", "meeting_date",
+    "performance_score", "sentiment_positive", "sentiment_neutral",
+    "sentiment_negative", "word_count", "talk_time_seconds",
+    "contribution_summary"
+  }]
+}
+```
+
+---
+
+## Rank System
+
+| Rank | Score Range | Badge |
+|------|-----------|-------|
+| Bronze | 0 – 30 | 🥉 |
+| Silver | 31 – 50 | 🥈 |
+| Gold | 51 – 70 | 🥇 |
+| Platinum | 71 – 85 | 💎 |
+| Diamond | 86 – 100 | 👑 |
+
+## Achievement Badges
+
+| Badge | Criteria |
+|-------|----------|
+| 🩸 First Blood | Attended first meeting |
+| ⭐ MVP | Scored 90+ in any meeting |
+| 🔥 Clutch | Score > 60 despite negative sentiment majority |
+| 🤝 Team Player | 3+ meetings with positive sentiment majority |
+| 👑 Legend | 10+ meetings with 80+ average score |
+
+---
+
+## Files Modified/Created
+
+### Backend
+- `meetings/models.py` — Added `TeamDirectory.key` field + `UserMeetingScore` model
+- `meetings/views.py` — Added `send-credentials` and `profile` endpoints
+- `meetings/serializers.py` — Updated `TeamDirectorySerializer` with key + validation
+- `meetings/tasks.py` — Added `compute_participant_scores` task + fuzzy name matching
+
+### Frontend
+- `src/pages/TeamDirectory.jsx` — Added Send Email + View Profile buttons per card
+- `src/pages/UserProfile.jsx` — Full PUBG-inspired profile page
+- `src/pages/profileCharts.jsx` — Chart components (radar, sparkline, sentiment, gauge)
+- `src/pages/userProfile.css` — Premium dark theme styles with animations
+- `src/App.jsx` — Added `/team/:id` route
+- `src/api/client.js` — Added `getTeamMemberProfile()` API function
+
+### Migrations
+- `0006_teamdirectory_key.py`
+- `0007_add_user_meeting_score.py`
+
+---
+
+## Running the Project
+
+Open 5 separate terminals:
 
 **Terminal 1 — ngrok**
 ```powershell
 cd "C:\Users\LENOVO\Desktop\nlp project\MeetingSummarizer\backend"
 .\ngrok.exe http 8000
 ```
-
----
 
 **Terminal 2 — Django**
 ```powershell
@@ -28,16 +205,12 @@ venv\Scripts\activate
 python manage.py runserver
 ```
 
----
-
 **Terminal 3 — Celery Worker**
 ```powershell
 cd "C:\Users\LENOVO\Desktop\nlp project\MeetingSummarizer\backend"
 venv\Scripts\activate
 celery -A config worker -l info --pool=solo
 ```
-
----
 
 **Terminal 4 — Celery Beat**
 ```powershell
@@ -46,19 +219,19 @@ venv\Scripts\activate
 celery -A config beat -l info
 ```
 
----
-
 **Terminal 5 — Frontend**
 ```powershell
 cd "C:\Users\LENOVO\Desktop\nlp project\MeetingSummarizer\frontend"
 npm run dev
 ```
 
+Start them in order 1 → 5.
+
 ---
 
-Start them in order 1 → 5. Once all are running, tell me and we'll test everything!
-
-
+## Git Commands
+```bash
 git add .
 git commit -m "your message"
 git push
+```

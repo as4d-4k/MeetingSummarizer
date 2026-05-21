@@ -6,7 +6,7 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework.routers import DefaultRouter
-from meetings.views import TeamDirectoryViewSet
+from meetings.views import TeamDirectoryViewSet, team_login, team_forgot_key
 
 # Team Directory router (separate from meetings router)
 team_router = DefaultRouter()
@@ -19,6 +19,9 @@ urlpatterns = [
     path("api/accounts/", include("accounts.urls")),
     path("api/meetings/", include("meetings.urls")),
     path("api/team-directory/", include(team_router.urls)),
+    # Team member auth (unauthenticated, key-based)
+    path("api/team-auth/login/", team_login, name="team-login"),
+    path("api/team-auth/forgot-key/", team_forgot_key, name="team-forgot-key"),
     # JWT token refresh (shared endpoint)
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     # Recall.ai webhook (unauthenticated)
