@@ -58,6 +58,7 @@ export const loginUser                = (data) => client.post('/accounts/login/'
 export const getProfile               = ()     => client.get('/accounts/profile/');
 export const getLanguagePreferences   = ()     => client.get('/accounts/language-preferences/');
 export const saveLanguagePreferences  = (data) => client.post('/accounts/language-preferences/', data);
+export const updateSlackId            = (data) => client.patch('/accounts/update-slack-id/', data);
 
 // Meetings
 export const getMeetings = (params) => client.get('/meetings/', { params });
@@ -86,5 +87,6 @@ export const getTeamMemberProfile = (id) => client.get(`/team-directory/${id}/pr
 // Team Auth (unauthenticated)
 export const teamLogin = (key) => client.post('/team-auth/login/', { key });
 export const teamForgotKey = (email) => client.post('/team-auth/forgot-key/', { email });
+export const teamUpdateSlackId = (key, slack_id) => client.post('/team-auth/update-slack-id/', { key, slack_id });
 
 export default client;

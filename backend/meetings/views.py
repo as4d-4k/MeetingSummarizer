@@ -587,6 +587,7 @@ class TeamDirectoryViewSet(viewsets.ModelViewSet):
         # Overall performance = rolling average of all meeting scores
         agg = scores.aggregate(avg_score=Avg("performance_score"))
         overall_score = round(agg["avg_score"] or 0, 1)
+        total_score = round(sum(s.performance_score for s in scores), 1)
 
         # Meeting history for graphs
         meeting_history = []
@@ -616,13 +617,15 @@ class TeamDirectoryViewSet(viewsets.ModelViewSet):
             m_scores = UserMeetingScore.objects.filter(team_member=m)
             m_agg = m_scores.aggregate(avg=Avg("performance_score"))
             m_avg = round(m_agg["avg"] or 0, 1)
+            m_total = round(sum(s.performance_score for s in m_scores), 1)
             leaderboard.append({
                 "id": m.id,
                 "name": m.name,
                 "score": m_avg,
+                "total_score": m_total,
                 "meetings": m_scores.count(),
             })
-        leaderboard.sort(key=lambda x: x["score"], reverse=True)
+        leaderboard.sort(key=lambda x: x["total_score"], reverse=True)
 
         # Find this member's rank
         my_rank = next((i + 1 for i, lb in enumerate(leaderboard) if lb["id"] == member.id), 0)
@@ -642,6 +645,7 @@ class TeamDirectoryViewSet(viewsets.ModelViewSet):
                 "created_at": member.created_at.isoformat(),
             },
             "overall_score": overall_score,
+            "total_score": total_score,
             "total_meetings": total_meetings,
             "total_words": total_words,
             "total_talk_time": total_talk_time,
@@ -662,25 +666,43 @@ class TeamDirectoryViewSet(viewsets.ModelViewSet):
 def team_login(request):
     """
     POST /api/team-auth/login/
-    Body: { "key": "abc123XYZ0" }
-    Returns the team member's profile data if key matches.
+    Body: { "key": "abc123XYZ0AbCd" }
+    The key is 14 chars: first 10 = member key, last 4 = admin org_key.
+    Finds the admin via org_key, looks up the member, and returns
+    profile data + ranking of all team members under that admin.
     """
     key = request.data.get("key", "").strip()
     if not key:
         return Response({"error": "Key is required."}, status=status.HTTP_400_BAD_REQUEST)
 
+    if len(key) < 5:
+        return Response({"error": "Invalid key. Please check and try again."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Extract the admin's org_key from the last 4 characters
+    org_key = key[-4:]
+
+    # Find the admin user by org_key
+    from django.contrib.auth import get_user_model
+    UserModel = get_user_model()
     try:
-        member = TeamDirectory.objects.get(key=key)
+        admin_user = UserModel.objects.get(org_key=org_key)
+    except UserModel.DoesNotExist:
+        return Response({"error": "Invalid key. Please check and try again."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Find the team member under this admin with the full key
+    try:
+        member = TeamDirectory.objects.get(key=key, user=admin_user)
     except TeamDirectory.DoesNotExist:
         return Response({"error": "Invalid key. Please check and try again."}, status=status.HTTP_404_NOT_FOUND)
 
-    # Build profile data (same as the profile endpoint)
+    # Build profile data
     from meetings.models import UserMeetingScore
     from django.db.models import Avg
 
     scores = UserMeetingScore.objects.filter(team_member=member).order_by("meeting_date")
     agg = scores.aggregate(avg_score=Avg("performance_score"))
     overall_score = round(agg["avg_score"] or 0, 1)
+    total_score = round(sum(s.performance_score for s in scores), 1)
 
     meeting_history = []
     for s in scores:
@@ -706,6 +728,26 @@ def team_login(request):
     best_score = max(score_values) if score_values else 0
     worst_score = min(score_values) if score_values else 0
 
+    # Build leaderboard from ALL team members under the same admin
+    all_members = TeamDirectory.objects.filter(user=admin_user)
+    leaderboard = []
+    for m in all_members:
+        m_scores = UserMeetingScore.objects.filter(team_member=m)
+        m_agg = m_scores.aggregate(avg=Avg("performance_score"))
+        m_avg = round(m_agg["avg"] or 0, 1)
+        m_total = round(sum(s.performance_score for s in m_scores), 1)
+        leaderboard.append({
+            "id": m.id,
+            "name": m.name,
+            "score": m_avg,
+            "total_score": m_total,
+            "meetings": m_scores.count(),
+        })
+    leaderboard.sort(key=lambda x: x["total_score"], reverse=True)
+
+    # Find this member's rank
+    my_rank = next((i + 1 for i, lb in enumerate(leaderboard) if lb["id"] == member.id), 0)
+
     return Response({
         "member": {
             "id": member.id,
@@ -716,13 +758,14 @@ def team_login(request):
             "created_at": member.created_at.isoformat(),
         },
         "overall_score": overall_score,
+        "total_score": total_score,
         "total_meetings": total_meetings,
         "total_words": total_words,
         "total_talk_time": total_talk_time,
         "best_score": round(best_score, 1),
         "worst_score": round(worst_score, 1),
-        "rank": 0,
-        "leaderboard": [],
+        "rank": my_rank,
+        "leaderboard": leaderboard,
         "meeting_history": meeting_history,
     })
 
@@ -733,7 +776,7 @@ def team_forgot_key(request):
     """
     POST /api/team-auth/forgot-key/
     Body: { "email": "john@company.com" }
-    Generates a new key, saves it, and emails it to the user.
+    Generates a new key (10 random + admin org_key), saves it, and emails it.
     """
     email = request.data.get("email", "").strip().lower()
     if not email:
@@ -744,9 +787,10 @@ def team_forgot_key(request):
     except TeamDirectory.DoesNotExist:
         return Response({"error": "No team member found with this email."}, status=status.HTTP_404_NOT_FOUND)
 
-    # Generate new key
+    # Generate new composite key: 10 random + admin's org_key
     from meetings.models import generate_10_digit_key
-    new_key = generate_10_digit_key()
+    admin_org_key = member.user.org_key
+    new_key = generate_10_digit_key() + admin_org_key
     member.key = new_key
     member.save(update_fields=["key"])
 
@@ -767,3 +811,34 @@ def team_forgot_key(request):
     return Response({
         "message": f"A new key has been sent to {member.email}. Check your inbox.",
     })
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def team_update_slack_id(request):
+    """
+    POST /api/team-auth/update-slack-id/
+    Body: { "key": "abc123XYZ0AbCd", "slack_id": "U0123ABCDEF" }
+    Allows a team member to update their Slack ID using their login key.
+    """
+    key = request.data.get("key", "").strip()
+    slack_id = request.data.get("slack_id", "").strip()
+
+    if not key:
+        return Response({"error": "Key is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if slack_id and (not slack_id.startswith("U") or not slack_id[1:].isalnum() or " " in slack_id):
+        return Response(
+            {"error": "Invalid Slack ID format. Must start with 'U' followed by alphanumeric characters."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        member = TeamDirectory.objects.get(key=key)
+    except TeamDirectory.DoesNotExist:
+        return Response({"error": "Invalid key."}, status=status.HTTP_404_NOT_FOUND)
+
+    member.slack_id = slack_id
+    member.save(update_fields=["slack_id"])
+
+    return Response({"message": "Slack ID updated successfully.", "slack_id": slack_id})

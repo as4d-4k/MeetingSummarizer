@@ -584,8 +584,10 @@ def compute_participant_scores(meeting_id: int):
     """
     After meeting completes: match speakers to TeamDirectory users,
     compute per-meeting performance scores & sentiment breakdowns,
-    and create UserMeetingScore records for the profile page.
+    and create UserMeetingScore records — ALL in a single DB transaction,
+    then broadcast ONE batch event to the frontend.
     """
+    from django.db import transaction
     from meetings.models import Meeting, Speaker, SpeakerAnalysis, TeamDirectory, UserMeetingScore
 
     try:
@@ -608,46 +610,39 @@ def compute_participant_scores(meeting_id: int):
     dir_lookup = {}
     for entry in directory:
         dir_lookup[entry.name.strip().lower()] = entry
-        # Also index by first name for partial matches
         parts = entry.name.strip().split()
         if len(parts) > 1:
             dir_lookup[parts[0].lower()] = entry
 
-    matched = 0
+    # ── Phase 1: Compute ALL scores first (no DB writes yet) ──
+    batch_results = []
     for speaker in speakers:
-        # ── Fuzzy name matching ──
         team_member = _match_speaker_to_directory(speaker.name, dir_lookup)
         if not team_member:
             logger.debug("No directory match for speaker '%s'", speaker.name)
             continue
 
-        # ── Compute scores from SpeakerAnalysis records ──
         analyses = SpeakerAnalysis.objects.filter(meeting=meeting, speaker=speaker)
 
         if analyses.exists():
             scores = [a.performance_score for a in analyses if a.performance_score is not None]
             avg_score = sum(scores) / len(scores) if scores else 0
-
             sent_pos = analyses.filter(sentiment="positive").count()
             sent_neu = analyses.filter(sentiment="neutral").count()
             sent_neg = analyses.filter(sentiment="negative").count()
-
-            # Build contribution summary from analyses
             summaries = [a.summary for a in analyses if a.summary]
             contribution = " ".join(summaries)[:500]
         else:
-            # Fallback: use speaker-level data
             avg_score = speaker.performance_score or 0
             sent_pos = 1 if speaker.sentiment == "positive" else 0
             sent_neu = 1 if speaker.sentiment == "neutral" else 0
             sent_neg = 1 if speaker.sentiment == "negative" else 0
             contribution = speaker.last_quote or ""
 
-        # ── Create or update the score record ──
-        UserMeetingScore.objects.update_or_create(
-            team_member=team_member,
-            meeting=meeting,
-            defaults={
+        batch_results.append({
+            "team_member": team_member,
+            "speaker": speaker,
+            "score_data": {
                 "performance_score": round(avg_score, 1),
                 "sentiment_positive": sent_pos,
                 "sentiment_neutral": sent_neu,
@@ -657,14 +652,58 @@ def compute_participant_scores(meeting_id: int):
                 "talk_time_seconds": speaker.talk_time_seconds,
                 "meeting_date": meeting.date,
             },
-        )
-        matched += 1
-        logger.info(
-            "Score recorded: %s → %s (score=%.1f) in meeting %d",
-            speaker.name, team_member.name, avg_score, meeting_id
-        )
+        })
 
-    logger.info("compute_participant_scores: %d/%d speakers matched for meeting %d", matched, speakers.count(), meeting_id)
+    if not batch_results:
+        logger.info("compute_participant_scores: 0 speakers matched for meeting %d", meeting_id)
+        return
+
+    # ── Phase 2: Write ALL scores in a single atomic transaction ──
+    with transaction.atomic():
+        for entry in batch_results:
+            UserMeetingScore.objects.update_or_create(
+                team_member=entry["team_member"],
+                meeting=meeting,
+                defaults=entry["score_data"],
+            )
+
+    logger.info(
+        "compute_participant_scores: %d speakers scored atomically for meeting %d",
+        len(batch_results), meeting_id,
+    )
+
+    # ── Phase 3: Broadcast ONE batch event with all participant scores ──
+    broadcast_payload = []
+    for entry in batch_results:
+        sd = entry["score_data"]
+        # Determine dominant sentiment
+        sents = {"positive": sd["sentiment_positive"], "neutral": sd["sentiment_neutral"], "concern": sd["sentiment_negative"]}
+        dominant = max(sents, key=sents.get) if any(sents.values()) else "neutral"
+
+        broadcast_payload.append({
+            "speaker_id": entry["speaker"].id,
+            "speaker_name": entry["speaker"].name,
+            "team_member_id": entry["team_member"].id,
+            "team_member_name": entry["team_member"].name,
+            "performance_score": sd["performance_score"],
+            "sentiment_positive": sd["sentiment_positive"],
+            "sentiment_neutral": sd["sentiment_neutral"],
+            "sentiment_negative": sd["sentiment_negative"],
+            "dominant_sentiment": dominant,
+            "word_count": sd["word_count"],
+            "talk_time_seconds": sd["talk_time_seconds"],
+            "contribution_summary": sd["contribution_summary"],
+        })
+
+    broadcast_to_meeting(meeting_id, "participant_scores_batch", {
+        "participants": broadcast_payload,
+        "total_matched": len(broadcast_payload),
+    })
+
+    logger.info(
+        "compute_participant_scores: batch broadcast sent for meeting %d (%d participants)",
+        meeting_id, len(broadcast_payload),
+    )
 
 
 def _match_speaker_to_directory(speaker_name: str, dir_lookup: dict):

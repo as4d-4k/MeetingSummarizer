@@ -142,14 +142,25 @@ class TeamDirectorySerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "key", "created_at", "updated_at"]
+        extra_kwargs = {
+            "email": {"required": True, "allow_blank": False},
+        }
 
     def validate(self, attrs):
         request = self.context.get("request")
         user = request.user
+        name = attrs.get("name")
         email = attrs.get("email")
         slack_id = attrs.get("slack_id")
 
         instance_id = self.instance.id if self.instance else None
+
+        if name:
+            query = TeamDirectory.objects.filter(user=user, name__iexact=name)
+            if instance_id:
+                query = query.exclude(id=instance_id)
+            if query.exists():
+                raise serializers.ValidationError({"name": "Display name already exists in your Team Directory."})
 
         if email:
             query = TeamDirectory.objects.filter(user=user, email=email)
@@ -168,5 +179,9 @@ class TeamDirectorySerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        validated_data["user"] = self.context["request"].user
+        from meetings.models import generate_10_digit_key
+        user = self.context["request"].user
+        validated_data["user"] = user
+        # Key = 10 random chars + admin's 4-char org_key
+        validated_data["key"] = generate_10_digit_key() + user.org_key
         return super().create(validated_data)

@@ -124,8 +124,8 @@ export default function Login() {
                 <div className="auth-field">
                   <label className="auth-label">Your Key</label>
                   <input type="text" value={teamKey} onChange={e => setTeamKey(e.target.value)}
-                    placeholder="Enter your 10-character key" className="auth-input auth-input-key"
-                    maxLength={10} required autoFocus autoComplete="off" spellCheck="false" />
+                    placeholder="Enter your 14-character key" className="auth-input auth-input-key"
+                    maxLength={14} required autoFocus autoComplete="off" spellCheck="false" />
                   <span className="auth-hint">Your key was provided by the admin or sent to your email</span>
                 </div>
                 {error && <div className="auth-error"><ErrorIcon />{error}</div>}

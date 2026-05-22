@@ -186,6 +186,30 @@ export default function MeetingDetail() {
         topic_coverage: d.topic_coverage,
         last_quote: d.one_line_quote || s.last_quote,
       } : s));
+
+    } else if (msg.type === 'participant_scores_batch') {
+      // ── Atomic batch update: all participant scores arrive together ──
+      const { participants } = msg.data;
+      if (participants && participants.length > 0) {
+        setLiveSpeakers(prev => {
+          const scoreMap = {};
+          participants.forEach(p => { scoreMap[p.speaker_id] = p; });
+          return prev.map(s => {
+            const ps = scoreMap[s.id];
+            if (!ps) return s;
+            return {
+              ...s,
+              performance_score: ps.performance_score,
+              sentiment: ps.dominant_sentiment,
+              sentiment_positive: ps.sentiment_positive,
+              sentiment_neutral: ps.sentiment_neutral,
+              sentiment_negative: ps.sentiment_negative,
+              contribution_summary: ps.contribution_summary,
+              _scored: true,  // flag: this card has final scores
+            };
+          });
+        });
+      }
     }
   }, [fetchMeeting]);
 

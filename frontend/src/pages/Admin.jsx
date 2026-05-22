@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import apiClient, { getLanguagePreferences, saveLanguagePreferences } from '../api/client';
+import apiClient, { getLanguagePreferences, saveLanguagePreferences, updateSlackId, getProfile } from '../api/client';
 import './admin.css';
 
 const LANGUAGE_CODES = {
@@ -41,6 +41,9 @@ export default function Admin() {
   const [isEditing, setIsEditing]   = useState(false);
   const [savedStatus, setSavedStatus] = useState(false);
   const [activeTab, setActiveTab]   = useState('personal');
+  const [slackId, setSlackId]       = useState('');
+  const [slackError, setSlackError] = useState('');
+  const [slackSaved, setSlackSaved] = useState(false);
 
   // Hint generation state
   const [hintsState, setHintsState] = useState('idle');
@@ -68,6 +71,11 @@ export default function Admin() {
 
     // Load hint status from backend
     fetchHintsStatus();
+
+    // Load slack_id from backend
+    getProfile().then(({ data }) => {
+      if (data.slack_id) setSlackId(data.slack_id);
+    }).catch(() => {});
   }, []);
 
   const fetchHintsStatus = async () => {
@@ -318,6 +326,69 @@ export default function Admin() {
                     <span className="readonly-tag">Read-only</span>
                   </div>
                 </div>
+              </div>
+              <div className="admin-field full-width">
+                  <label className="admin-field-label">Slack ID</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      value={slackId}
+                      onChange={(e) => {
+                        setSlackId(e.target.value);
+                        setSlackError('');
+                        setSlackSaved(false);
+                      }}
+                      className="admin-field-input"
+                      placeholder="U0123ABCDEF"
+                      style={{ flex: 1 }}
+                    />
+                    {slackId && (
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(slackId); }}
+                        title="Copy Slack ID"
+                        style={{
+                          background: 'rgba(108,99,255,0.1)', border: '1px solid rgba(108,99,255,0.2)',
+                          borderRadius: 8, padding: '8px 10px', cursor: 'pointer', color: '#9B8FFF',
+                          display: 'flex', alignItems: 'center',
+                        }}
+                      >
+                        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                          <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                        </svg>
+                      </button>
+                    )}
+                    <button
+                      onClick={async () => {
+                        if (slackId && (!slackId.startsWith('U') || !/^U[a-zA-Z0-9]+$/.test(slackId))) {
+                          setSlackError('Must start with U followed by alphanumeric chars');
+                          return;
+                        }
+                        try {
+                          await updateSlackId({ slack_id: slackId });
+                          setSlackSaved(true);
+                          setSlackError('');
+                          setTimeout(() => setSlackSaved(false), 3000);
+                        } catch (err) {
+                          setSlackError(err.response?.data?.error || 'Failed to save');
+                        }
+                      }}
+                      style={{
+                        background: 'rgba(0,200,150,0.1)', border: '1px solid rgba(0,200,150,0.2)',
+                        borderRadius: 8, padding: '8px 14px', cursor: 'pointer', color: '#00C896',
+                        fontSize: 12, fontWeight: 600, fontFamily: 'var(--font-body)',
+                        display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      Save
+                    </button>
+                  </div>
+                  {slackError && <span style={{ color: '#FF6B6B', fontSize: 11, marginTop: 4, display: 'block' }}>{slackError}</span>}
+                  {slackSaved && <span style={{ color: '#00C896', fontSize: 11, marginTop: 4, display: 'block' }}>✅ Slack ID saved successfully</span>}
+                  <span className="admin-field-hint" style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>Find in Slack → Profile → More → Copy Member ID</span>
               </div>
             </div>
           )}

@@ -44,8 +44,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "email", "username", "date_joined"]
-        read_only_fields = fields
+        fields = ["id", "email", "username", "slack_id", "date_joined"]
+        read_only_fields = ["id", "email", "username", "date_joined"]
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):

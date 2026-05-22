@@ -3,8 +3,15 @@ Custom User model + UserLanguageProfile for Meeting Summarizer.
 Uses email as the primary login field instead of username.
 """
 
+import random
+import string
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+
+
+def generate_org_key():
+    """Generate a unique 4-character alphanumeric key for an admin/organization."""
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=4))
 
 
 class User(AbstractUser):
@@ -15,6 +22,17 @@ class User(AbstractUser):
     """
 
     email = models.EmailField("email address", unique=True)
+
+    # Unique organization key — appended to every team member's login key
+    org_key = models.CharField(
+        "Organization Key",
+        max_length=4,
+        unique=True,
+        blank=True,
+        default=generate_org_key,
+    )
+
+    slack_id = models.CharField("Slack ID", max_length=50, blank=True, default="")
 
     # Use email for login instead of username
     USERNAME_FIELD = "email"

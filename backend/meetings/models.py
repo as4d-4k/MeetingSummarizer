@@ -322,7 +322,7 @@ class TeamDirectory(models.Model):
     name = models.CharField("Display Name", max_length=150)
     email = models.EmailField("Email Address", blank=True, default="")
     slack_id = models.CharField("Slack User ID", max_length=50, blank=True, default="")
-    key = models.CharField("Key", max_length=10, blank=True, default=generate_10_digit_key)
+    key = models.CharField("Key", max_length=14, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

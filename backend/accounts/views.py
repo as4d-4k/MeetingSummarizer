@@ -147,6 +147,23 @@ class ProfileView(APIView):
         return Response(serializer.data)
 
 
+class UpdateSlackIdView(APIView):
+    """PATCH /api/accounts/update-slack-id/ — update the user's Slack ID."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request):
+        slack_id = request.data.get("slack_id", "").strip()
+        if slack_id and (not slack_id.startswith("U") or not slack_id[1:].isalnum() or " " in slack_id):
+            return Response(
+                {"error": "Invalid Slack ID format. Must start with 'U' followed by alphanumeric characters."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        request.user.slack_id = slack_id
+        request.user.save(update_fields=["slack_id"])
+        return Response({"message": "Slack ID updated successfully.", "slack_id": slack_id})
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Language Preferences + Hint Generation
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

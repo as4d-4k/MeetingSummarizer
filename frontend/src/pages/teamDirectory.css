@@ -272,6 +272,23 @@
   color: #64748b;
   border: 1px solid rgba(100, 116, 139, 0.15);
 }
+.td-copy-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+  transition: all 0.15s ease;
+}
+.td-copy-btn:hover {
+  opacity: 1;
+  background: rgba(251, 191, 36, 0.2);
+}
 
 .td-member-actions {
   display: flex;
@@ -548,6 +565,161 @@
   justify-content: center;
 }
 
+/* ── Tabs ── */
+.td-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 24px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(99, 102, 241, 0.08);
+  border-radius: 14px;
+}
+.td-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 20px;
+  border-radius: 11px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  font-family: var(--font-body, inherit);
+}
+.td-tab:hover {
+  color: #94a3b8;
+  background: rgba(99, 102, 241, 0.04);
+}
+.td-tab-active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(139, 92, 246, 0.1));
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.12);
+}
+.td-tab-active:hover {
+  color: #a5b4fc;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(139, 92, 246, 0.12));
+}
+
+/* ── Ranking ── */
+.td-ranking-section {
+  margin-top: 4px;
+}
+.td-ranking-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.td-ranking-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgba(99, 102, 241, 0.06);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.td-ranking-row:hover {
+  background: rgba(15, 23, 42, 0.6);
+  border-color: rgba(99, 102, 241, 0.15);
+  transform: translateX(4px);
+}
+.td-ranking-top {
+  background: rgba(15, 23, 42, 0.5);
+  border-color: rgba(99, 102, 241, 0.1);
+}
+.td-ranking-me {
+  background: rgba(99, 102, 241, 0.06);
+  border-color: rgba(99, 102, 241, 0.18);
+  cursor: default;
+}
+.td-ranking-me:hover {
+  transform: none;
+}
+.td-ranking-position {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+  border: 1px solid;
+}
+.td-ranking-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2e8f0;
+  flex-shrink: 0;
+  border: 1px solid;
+}
+.td-ranking-info {
+  flex: 1;
+  min-width: 0;
+}
+.td-ranking-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f1f5f9;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.td-ranking-you-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  padding: 2px 8px;
+  border-radius: 100px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.td-ranking-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+.td-ranking-score {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.td-ranking-score-value {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+.td-ranking-score-label {
+  font-size: 10px;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .td-root {
@@ -563,5 +735,15 @@
   }
   .td-member-actions {
     opacity: 1;
+  }
+  .td-tabs {
+    flex-direction: column;
+  }
+  .td-ranking-row {
+    padding: 12px 14px;
+    gap: 10px;
+  }
+  .td-ranking-score-value {
+    font-size: 16px;
   }
 }

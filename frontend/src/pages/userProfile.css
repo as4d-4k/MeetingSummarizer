@@ -18,6 +18,7 @@
 @keyframes gpCountUp{from{opacity:.3}to{opacity:1}}
 @keyframes gpConfetti{0%{transform:translateY(0) rotate(0);opacity:1}100%{transform:translateY(100vh) rotate(720deg);opacity:0}}
 @keyframes gpCrownBob{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-4px) scale(1.1)}}
+@keyframes gpScorePulse{0%,100%{box-shadow:0 0 15px rgba(108,99,255,0.4), inset 0 0 15px rgba(108,99,255,0.2); transform:scale(1)}50%{box-shadow:0 0 30px rgba(108,99,255,0.8), inset 0 0 30px rgba(108,99,255,0.5); transform:scale(1.04)}}
 @keyframes gpXpFill{from{width:0}to{width:var(--xp-pct)}}
 
 .gp-back{display:inline-flex;align-items:center;gap:6px;color:var(--text-muted);font-size:13px;background:none;border:none;cursor:pointer;margin-bottom:20px;padding:0;font-family:var(--font-body);transition:color .2s}
@@ -68,12 +69,12 @@
 .gp-xp-pts{position:absolute;right:0;top:-18px;font-size:10px;font-weight:700;color:var(--text-muted)}
 
 /* ── Info Cards ── */
-.gp-info-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:24px}
-.gp-info-item{display:flex;align-items:center;gap:12px;padding:16px 18px;border-radius:14px;background:var(--bg-card);border:1px solid var(--border-subtle);transition:border-color .3s,box-shadow .3s}
+.gp-info-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px;margin-bottom:24px}
+.gp-info-item{display:flex;align-items:center;gap:16px;padding:16px 20px;border-radius:14px;background:var(--bg-card);border:1px solid var(--border-subtle);transition:border-color .3s,box-shadow .3s;min-height:76px}
 .gp-info-item:hover{border-color:rgba(108,99,255,.3);box-shadow:0 0 20px rgba(108,99,255,.08)}
-.gp-info-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px}
-.gp-info-lbl{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em}
-.gp-info-val{font-size:13px;color:var(--text-primary);font-weight:600;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gp-info-icon{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px}
+.gp-info-lbl{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
+.gp-info-val{font-size:14px;color:var(--text-primary);font-weight:600;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ── Section Title Neon ── */
 .gp-section-title{font-size:14px;font-weight:700;color:var(--text-secondary);margin-bottom:18px;display:flex;align-items:center;gap:10px;position:relative;padding-bottom:8px}

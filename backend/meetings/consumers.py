@@ -161,3 +161,12 @@ class MeetingConsumer(AsyncJsonWebsocketConsumer):
 
     async def transcript_update(self, event):
         await self.send_json({"type": "transcript_update", "data": event["data"]})
+
+    async def participant_scores_batch(self, event):
+        """Atomic batch of all participant scores — sent once after meeting completion."""
+        await self.send_json({"type": "participant_scores_batch", "data": event["data"]})
+
+    async def notification_update(self, event):
+        """Action item notification status update."""
+        await self.send_json({"type": "notification_update", "data": event["data"]})
+
