@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 class ActionItemOutput(BaseModel):
     assigned_to: str = Field(description="Name of the person assigned this task")
-    assigned_speaker_id: Optional[int] = Field(default=None, description="The Speaker ID from the transcript (e.g. from '[John (Speaker ID: 4)]'). Extract the integer ID.")
+    assigned_speaker_id: Optional[int] = Field(default=None, description="The database ID of the speaker if known. Usually not available from transcript alone.")
     task: str = Field(description="Clear description of the task in English")
     deadline: Optional[str] = Field(default=None, description="Deadline if mentioned")
 
@@ -263,7 +263,7 @@ class LLMService:
                         "4. Identify speakers by name or role\n"
                         "5. Note any key decisions made\n\n"
                         "ACTION ITEM ASSIGNMENT RULES (CRITICAL):\n"
-                        "- The transcript has speaker labels like '[John (Speaker ID: 4)]: ...'\n"
+                        "- The transcript has speaker labels like '[John]: ...'\n"
                         "- When extracting action items, pay attention to WHO the task is ABOUT, "
                         "not just who is speaking.\n"
                         "- If a speaker says 'Muhammad Umar, please start working on presentations', "
@@ -272,8 +272,7 @@ class LLMService:
                         "the assigned_to MUST be 'Slaxky'.\n"
                         "- Only use 'All participants' if the task is genuinely for everyone "
                         "(e.g. 'everyone needs to submit reports').\n"
-                        "- Extract the assignee's name EXACTLY as mentioned in the transcript.\n"
-                        "- If a Speaker ID is available for the assignee, include 'assigned_speaker_id'.\n\n"
+                        "- Extract the assignee's name EXACTLY as mentioned in the transcript.\n\n"
                         "CRITICAL OUTPUT RULE: "
                         "ALL text outputs (english_translation, summary, key_decisions, action items) "
                         "MUST be written in ENGLISH. Even if the transcript is in Urdu, Roman Urdu, "

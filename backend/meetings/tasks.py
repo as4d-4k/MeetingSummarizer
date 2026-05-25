@@ -957,33 +957,26 @@ def _fetch_transcript(meeting) -> str:
         return meeting.full_transcript
 
     # ── Attempt 1: Use LiveTranscriptSegments already in DB ──
-    # These were captured in real-time via Gladia webhooks.
-    # If Azure is configured, we SKIP these (Gladia is lower quality)
-    # and fall through to Attempt 3 which downloads the final MP4
-    # and runs it through Azure Speech with hint tables + diarization.
-    if not getattr(settings, 'AZURE_SPEECH_KEY', None):
-        live_segments = LiveTranscriptSegment.objects.filter(
-            meeting=meeting
-        ).select_related("speaker").order_by("start_time")
+    # These were captured in real-time via Deepgram Nova-3 webhooks.
+    # Deepgram provides high-quality transcription with speaker labels,
+    # so these are always the preferred source for the post-meeting transcript.
+    live_segments = LiveTranscriptSegment.objects.filter(
+        meeting=meeting
+    ).select_related("speaker").order_by("start_time")
 
-        if live_segments.exists():
-            logger.info(
-                "Assembling transcript from %d Gladia live segments for meeting %d",
-                live_segments.count(), meeting.id
-            )
-            lines = []
-            for seg in live_segments:
-                if seg.speaker:
-                    speaker_label = f"{seg.speaker.name} (Speaker ID: {seg.speaker.id})"
-                else:
-                    speaker_label = "Unknown"
-                lines.append(f"[{speaker_label}]: {seg.text}")
-            return "\n".join(lines)
-    else:
+    if live_segments.exists():
         logger.info(
-            "Azure configured — skipping Gladia segments for meeting %d, will use Azure on final MP4",
-            meeting.id
+            "Assembling transcript from %d Deepgram live segments for meeting %d",
+            live_segments.count(), meeting.id
         )
+        lines = []
+        for seg in live_segments:
+            if seg.speaker:
+                speaker_label = seg.speaker.name
+            else:
+                speaker_label = "Unknown"
+            lines.append(f"[{speaker_label}]: {seg.text}")
+        return "\n".join(lines)
 
     recall_svc = RecallService()
     transcription_svc = TranscriptionService()
