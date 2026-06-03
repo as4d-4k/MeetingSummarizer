@@ -419,4 +419,4 @@ Bot leaves → 30s delay → process_meeting_pipeline
 
 ## License
 
-This project was built as a **Final Year Project** for the NLP Course at FAST NUCES.
+This project was built as a **Semester Project** for the NLP Course at FCCU Lahore.
