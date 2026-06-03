@@ -225,7 +225,7 @@ def dispatch_bot_join(self, meeting_id: int, live_language: str = "English"):
         recall_svc = RecallService()
         bot_data = recall_svc.create_bot(
             meeting_url=meeting.meeting_url,
-            bot_name="Jhony jee ",
+            bot_name="Meeting Intel",
             live_language=live_language,
         )
 
